@@ -1,0 +1,44 @@
+name = "pkm-wiki"
+main = "src/index.ts"
+compatibility_date = "2026-04-04"
+compatibility_flags = ["nodejs_compat"]
+
+[ai]
+binding = "AI"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "pkm-wiki-db"
+database_id = "0d0b3589-7f62-40ba-9dce-3bf259ee2b69"
+
+[[r2_buckets]]
+binding = "STORAGE"
+bucket_name = "pkm-wiki-storage"
+
+[[routes]]
+pattern = "pkm.cafecito-ai.com/*"
+zone_id = "3f23c3413d5efddec61c297baffa8c0a"
+
+# Vectorize — uncomment after creating index: npx wrangler vectorize create pkm-wiki-pages --dimensions 768 --metric cosine
+# [[vectorize]]
+# binding = "VECTORIZE"
+# index_name = "pkm-wiki-pages"
+
+[[queues.producers]]
+queue = "pkm-wiki-jobs"
+binding = "JOBS_QUEUE"
+
+[[queues.consumers]]
+queue = "pkm-wiki-jobs"
+max_batch_size = 1
+max_retries = 3
+
+[browser]
+binding = "BROWSER"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "9663d2839a3748238f8bfa9f767a3252"
+
+[vars]
+WIKI_OWNER = "evan"

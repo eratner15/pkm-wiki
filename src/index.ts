@@ -23,6 +23,43 @@ function error(message: string, status = 400): Response {
   return json({ error: message }, status);
 }
 
+function topicSlug(raw: string): string {
+  return String(raw || '')
+    .toLowerCase()
+    .trim()
+    .replace(/^topic\//, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 60);
+}
+
+async function applyTopicToPages(env: Env, slugs: string[], topic: string): Promise<void> {
+  const t = topicSlug(topic);
+  if (!t || slugs.length === 0) return;
+  const tag = `topic/${t}`;
+  for (const slug of slugs) {
+    const row = await env.DB.prepare('SELECT tags FROM pages WHERE slug = ?').bind(slug).first();
+    if (!row) continue;
+    let tags: string[] = [];
+    try { tags = JSON.parse((row as any).tags || '[]'); } catch {}
+    if (!Array.isArray(tags)) tags = [];
+    if (!tags.includes(tag)) {
+      tags.push(tag);
+      await env.DB.prepare('UPDATE pages SET tags = ? WHERE slug = ?')
+        .bind(JSON.stringify(tags), slug).run();
+    }
+  }
+}
+
+function escapeHtml(s: string): string {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -261,7 +298,7 @@ export default {
       // POST /api/ingest
       if (method === 'POST' && path === '/api/ingest') {
         const body = await request.json() as any;
-        const { filename, content, source_type } = body;
+        const { filename, content, source_type, topic } = body;
 
         if (!filename || !content) {
           return error('filename and content are required');
@@ -274,6 +311,11 @@ export default {
           source_type || 'note'
         );
 
+        // Tag all touched pages with topic/<slug> if provided
+        if (topic) {
+          await applyTopicToPages(env, [...(result.pages_created || []), ...(result.pages_updated || [])], topic);
+        }
+
         // Index newly created pages in vectorize
         for (const slug of result.pages_created || []) {
           const page = await env.DB.prepare('SELECT id, title, summary, tags FROM pages WHERE slug = ?').bind(slug).first();
@@ -283,7 +325,7 @@ export default {
           }
         }
 
-        return json(result);
+        return json({ ...result, topic: topic ? topicSlug(topic) : null });
       }
 
       // POST /api/ingest/batch
@@ -570,7 +612,7 @@ export default {
       // POST /api/ingest/url — fetch a URL and ingest its content
       if (method === 'POST' && path === '/api/ingest/url') {
         const body = await request.json() as any;
-        const { url } = body;
+        const { url, topic } = body;
         if (!url) return error('url is required');
 
         try {
@@ -629,13 +671,149 @@ export default {
             .replace(/^-|-$/g, '')
             .slice(0, 80) + '.md';
 
-          const content = `# ${url}\n\nSource: ${url}\nFetched: ${new Date().toISOString()}\n\n${text}`;
+          const topicLine = topic ? `\nTopic: topic/${topicSlug(topic)}\n` : '';
+          const content = `# ${url}\n\nSource: ${url}\nFetched: ${new Date().toISOString()}${topicLine}\n\n${text}`;
 
           const result = await ingestSource(env, filename, content, sourceType);
-          return json(result);
+
+          if (topic) {
+            await applyTopicToPages(env, [...(result.pages_created || []), ...(result.pages_updated || [])], topic);
+          }
+
+          return json({ ...result, topic: topic ? topicSlug(topic) : null });
         } catch (err: any) {
           return error(`URL fetch failed: ${err.message}`, 502);
         }
+      }
+
+      // GET /api/topics — list all topic/* tags with page counts
+      if (method === 'GET' && path === '/api/topics') {
+        const rows = await env.DB.prepare(
+          "SELECT slug, title, tags, updated_at FROM pages WHERE tags LIKE '%topic/%'"
+        ).all();
+        const counts = new Map<string, { count: number; latest: string; sample: string[] }>();
+        for (const r of rows.results as any[]) {
+          let tags: string[] = [];
+          try { tags = JSON.parse(r.tags || '[]'); } catch {}
+          for (const t of tags) {
+            if (typeof t !== 'string' || !t.startsWith('topic/')) continue;
+            const slug = t.slice('topic/'.length);
+            if (!slug) continue;
+            const cur = counts.get(slug) || { count: 0, latest: '', sample: [] };
+            cur.count += 1;
+            if (r.updated_at && r.updated_at > cur.latest) cur.latest = r.updated_at;
+            if (cur.sample.length < 3) cur.sample.push(r.slug);
+            counts.set(slug, cur);
+          }
+        }
+        const topics = Array.from(counts.entries())
+          .map(([slug, v]) => ({ slug, count: v.count, latest: v.latest, sample: v.sample }))
+          .sort((a, b) => (b.latest || '').localeCompare(a.latest || '') || b.count - a.count);
+        return json({ topics });
+      }
+
+      // GET /api/topic/:slug/pages — list captures under a topic (newest first)
+      if (method === 'GET' && path.startsWith('/api/topic/') && path.endsWith('/pages')) {
+        const slug = topicSlug(path.slice('/api/topic/'.length, -'/pages'.length));
+        if (!slug) return error('topic slug required');
+        const tag = `topic/${slug}`;
+        const rows = await env.DB.prepare(
+          "SELECT slug, title, summary, page_type, tags, updated_at, created_at FROM pages WHERE tags LIKE ? ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 500"
+        ).bind(`%${tag}%`).all();
+        const pages = (rows.results as any[]).filter(r => {
+          let tags: string[] = [];
+          try { tags = JSON.parse(r.tags || '[]'); } catch {}
+          return Array.isArray(tags) && tags.includes(tag);
+        }).map(r => ({
+          slug: r.slug,
+          title: r.title,
+          summary: r.summary,
+          page_type: r.page_type,
+          updated_at: r.updated_at || r.created_at,
+        }));
+        return json({ topic: slug, count: pages.length, pages });
+      }
+
+      // POST /api/topic/:slug/distill — synthesize workflow-update brief from captures
+      if (method === 'POST' && path.startsWith('/api/topic/') && path.endsWith('/distill')) {
+        const slug = topicSlug(path.slice('/api/topic/'.length, -'/distill'.length));
+        if (!slug) return error('topic slug required');
+        const tag = `topic/${slug}`;
+
+        const rows = await env.DB.prepare(
+          "SELECT slug, title, summary, tags, updated_at, created_at FROM pages WHERE tags LIKE ? ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 40"
+        ).bind(`%${tag}%`).all();
+        const pages = (rows.results as any[]).filter(r => {
+          let tags: string[] = [];
+          try { tags = JSON.parse(r.tags || '[]'); } catch {}
+          return Array.isArray(tags) && tags.includes(tag);
+        });
+        if (pages.length === 0) return error('no captures under this topic yet', 404);
+
+        const captures: { ref: string; slug: string; title: string; summary: string; body: string }[] = [];
+        for (let i = 0; i < pages.length; i++) {
+          const p = pages[i];
+          const obj = await env.STORAGE.get(`wiki/${p.slug}.md`);
+          const body = obj ? (await obj.text()).slice(0, 4000) : '';
+          captures.push({
+            ref: `C${i + 1}`,
+            slug: p.slug,
+            title: p.title,
+            summary: p.summary || '',
+            body,
+          });
+        }
+
+        const today = new Date().toISOString().slice(0, 10);
+        const { runAI } = await import('./ai');
+        const { TOPIC_DISTILL_PROMPT } = await import('./prompts');
+
+        const userPrompt =
+          `Topic: ${slug}\nDate: ${today}\nNumber of captures: ${captures.length}\n\n` +
+          captures.map(c =>
+            `[${c.ref}] ${c.title}\nSlug: ${c.slug}\nSummary: ${c.summary}\n---\n${c.body}\n---\n`
+          ).join('\n');
+
+        let distilled = '';
+        try {
+          distilled = await runAI(env.AI, 'query', TOPIC_DISTILL_PROMPT, userPrompt, 6000);
+        } catch (e: any) {
+          return error(`Distill failed: ${e.message}`, 500);
+        }
+        if (!distilled || distilled.trim().length < 20) {
+          return error('Distill returned empty output', 502);
+        }
+
+        // Build a Claude-ready context block
+        const claudeBlock =
+          `<!-- PKM distill: topic/${slug} | ${today} | ${captures.length} captures -->\n` +
+          distilled.trim() + '\n\n' +
+          `<!-- End distill -->`;
+
+        // Log activity
+        try {
+          await env.DB.prepare("INSERT INTO activity_log (action, details, pages_touched) VALUES ('distill', ?, ?)")
+            .bind(JSON.stringify({ topic: slug, captures: captures.length }), JSON.stringify(captures.map(c => c.slug)))
+            .run();
+        } catch {}
+
+        return json({
+          topic: slug,
+          date: today,
+          capture_count: captures.length,
+          captures: captures.map(c => ({ ref: c.ref, slug: c.slug, title: c.title })),
+          markdown: distilled.trim(),
+          claude_context: claudeBlock,
+        });
+      }
+
+      // GET /topic/:slug — HTML view of a topic (captures + distill UI)
+      if (method === 'GET' && path.startsWith('/topic/')) {
+        const slug = topicSlug(path.slice('/topic/'.length));
+        if (!slug) return new Response('Topic not found', { status: 404 });
+        return new Response(topicPageHTML(slug), {
+          headers: { 'Content-Type': 'text/html; charset=utf-8' },
+        });
       }
 
       // POST /api/query
@@ -2132,6 +2310,143 @@ async function generateToken(password: string): Promise<string> {
   return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
 
+function topicPageHTML(topic: string): string {
+  const safe = escapeHtml(topic);
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Topic: ${safe} — PKM Wiki</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:'Inter',-apple-system,sans-serif;background:#0C0C0E;color:#E8E6E1;padding:40px 24px;min-height:100vh}
+    .wrap{max-width:880px;margin:0 auto}
+    .back{color:#8A8880;text-decoration:none;font-size:13px}
+    .back:hover{color:#D4A853}
+    h1{font-family:'Instrument Serif',Georgia,serif;font-size:44px;font-weight:400;letter-spacing:-0.02em;margin:18px 0 6px}
+    h1 .gold{color:#D4A853}
+    .sub{color:#8A8880;font-size:14px;margin-bottom:28px}
+    .actions{display:flex;gap:10px;margin-bottom:32px;flex-wrap:wrap}
+    button{background:#D4A853;border:none;border-radius:6px;color:#0C0C0E;padding:11px 18px;font-size:14px;font-weight:600;font-family:inherit;cursor:pointer}
+    button:hover{background:#C4983F}
+    button:disabled{background:#2A2A2F;color:#5A5850;cursor:wait}
+    button.secondary{background:transparent;color:#E8E6E1;border:1px solid #2A2A2F}
+    button.secondary:hover{border-color:#D4A853;color:#D4A853}
+    .captures{display:flex;flex-direction:column;gap:12px;margin-bottom:40px}
+    .cap{background:#161619;border:1px solid #2A2A2F;border-radius:6px;padding:18px 22px}
+    .cap a.title{color:#E8E6E1;text-decoration:none;font-weight:600;font-size:16px}
+    .cap a.title:hover{color:#D4A853}
+    .cap .meta{color:#5A5850;font-size:12px;margin-top:4px}
+    .cap .summary{color:#A8A59A;font-size:14px;margin-top:8px;line-height:1.5}
+    .empty{color:#8A8880;font-size:14px;padding:40px;text-align:center;background:#161619;border:1px solid #2A2A2F;border-radius:6px}
+    .distill{background:#161619;border:1px solid #2A2A2F;border-radius:6px;padding:24px 28px;margin-bottom:28px;display:none}
+    .distill h2{font-family:'Instrument Serif',Georgia,serif;font-size:22px;font-weight:400;margin-bottom:12px;color:#D4A853}
+    .distill .md{white-space:pre-wrap;font-size:14px;line-height:1.65;color:#E8E6E1}
+    .distill .md h1,.distill .md h2,.distill .md h3{font-weight:600;margin:16px 0 8px}
+    .distill pre{background:#0C0C0E;border:1px solid #2A2A2F;border-radius:4px;padding:12px;overflow-x:auto;font-size:12px}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #2A2A2F;border-top-color:#D4A853;border-radius:50%;animation:sp 0.8s linear infinite;vertical-align:middle;margin-right:8px}
+    @keyframes sp{to{transform:rotate(360deg)}}
+    .toast{position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#D4A853;color:#0C0C0E;padding:10px 20px;border-radius:6px;font-size:13px;font-weight:600;opacity:0;transition:opacity 0.2s;pointer-events:none}
+    .toast.on{opacity:1}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <a class="back" href="#">&larr; Back to wiki</a>
+    <h1>topic/<span class="gold">${safe}</span></h1>
+    <div class="sub" id="sub">Loading…</div>
+    <div class="actions">
+      <button id="distill-btn" onclick="doDistill()">&#9889; Distill into workflow update</button>
+      <button class="secondary" onclick="location.reload()">Refresh</button>
+    </div>
+    <div class="distill" id="distill-box">
+      <h2 id="distill-h">Distilled workflow update</h2>
+      <div class="md" id="distill-md"></div>
+      <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
+        <button onclick="copyForClaude()">Copy for Claude</button>
+        <button class="secondary" onclick="copyMarkdown()">Copy markdown</button>
+      </div>
+    </div>
+    <div id="captures" class="captures"></div>
+  </div>
+  <div class="toast" id="toast"></div>
+  <script>
+    var TOPIC = ${JSON.stringify(topic)};
+    var BASE = window.location.pathname.startsWith('/pkm') ? '/pkm' : '';
+    var claudeCtx = '';
+    var mdOut = '';
+
+    function toast(msg){ var t=document.getElementById('toast'); t.textContent=msg; t.classList.add('on'); setTimeout(function(){t.classList.remove('on')},1600); }
+    function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+    function backLink(){ var a=document.querySelector('a.back'); if(a) a.href=BASE+'/'; }
+    backLink();
+
+    async function load(){
+      try {
+        var r = await fetch(BASE + '/api/topic/' + encodeURIComponent(TOPIC) + '/pages');
+        var d = await r.json();
+        if (d.error) { document.getElementById('sub').textContent = d.error; return; }
+        document.getElementById('sub').textContent = d.count + ' capture' + (d.count===1?'':'s') + ' tagged topic/' + TOPIC;
+        var host = document.getElementById('captures');
+        if (!d.pages || d.pages.length === 0) {
+          host.innerHTML = '<div class="empty">No captures yet. Paste a URL or tweet into the dashboard cockpit and set Topic = <strong>'+esc(TOPIC)+'</strong>.</div>';
+          return;
+        }
+        host.innerHTML = d.pages.map(function(p){
+          var when = (p.updated_at || '').slice(0,10);
+          return '<div class="cap">' +
+                 '<a class="title" href="'+BASE+'/#'+encodeURIComponent(p.slug)+'">'+esc(p.title)+'</a>' +
+                 '<div class="meta">'+esc(p.page_type)+' · '+esc(when)+' · '+esc(p.slug)+'</div>' +
+                 (p.summary ? '<div class="summary">'+esc(p.summary)+'</div>' : '') +
+                 '</div>';
+        }).join('');
+      } catch(e) {
+        document.getElementById('sub').textContent = 'Failed to load: ' + e.message;
+      }
+    }
+
+    async function doDistill(){
+      var btn = document.getElementById('distill-btn');
+      var box = document.getElementById('distill-box');
+      var md = document.getElementById('distill-md');
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Distilling with Nemotron…';
+      box.style.display = 'none';
+      try {
+        var r = await fetch(BASE + '/api/topic/' + encodeURIComponent(TOPIC) + '/distill', { method:'POST' });
+        var d = await r.json();
+        if (d.error) { toast(d.error); btn.disabled=false; btn.innerHTML='&#9889; Distill into workflow update'; return; }
+        mdOut = d.markdown || '';
+        claudeCtx = d.claude_context || mdOut;
+        md.textContent = mdOut;
+        box.style.display = 'block';
+        btn.disabled = false; btn.innerHTML = '&#9889; Re-distill';
+        box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      } catch(e) {
+        toast('Distill failed: ' + e.message);
+        btn.disabled = false; btn.innerHTML = '&#9889; Distill into workflow update';
+      }
+    }
+
+    async function copyForClaude(){
+      try { await navigator.clipboard.writeText(claudeCtx); toast('Copied Claude context'); }
+      catch(e) { toast('Clipboard blocked'); }
+    }
+    async function copyMarkdown(){
+      try { await navigator.clipboard.writeText(mdOut); toast('Copied markdown'); }
+      catch(e) { toast('Clipboard blocked'); }
+    }
+
+    load();
+  </script>
+</body>
+</html>`;
+}
+
 function loginPageHTML(): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -3237,10 +3552,17 @@ function dashboardHTML(): string {
         '<span style="color:var(--accent);font-size:15px;flex-shrink:0">&#9672;</span>' +
         '<input class="cockpit-input" type="text" id="cockpit-input" placeholder="Paste a URL, tweet, article, idea, or service to research..." oninput="cockpitDetect()" />' +
         '</div>' +
+        '<div style="display:flex;align-items:center;gap:8px;padding:4px 12px 10px;border-top:1px dashed var(--border)">' +
+        '<span style="color:var(--text-dim);font-size:11px;text-transform:uppercase;letter-spacing:1px;flex-shrink:0">Topic</span>' +
+        '<input list="topic-list" class="cockpit-input" type="text" id="cockpit-topic" placeholder="optional — e.g. cloudflare-agent-week" style="font-size:13px;padding:4px 0" oninput="onTopicInput()" />' +
+        '<datalist id="topic-list"></datalist>' +
+        '<a id="topic-open" href="#" style="font-size:11px;color:var(--text-dim);text-decoration:none;display:none" target="_blank">Open topic &rarr;</a>' +
+        '</div>' +
         '<div class="cockpit-detect" id="cockpit-detect"></div>' +
         '<div class="cockpit-actions">' +
         '<button class="btn-primary" id="cockpit-research-btn" onclick="quickResearch()">&#9889; Research</button>' +
         '<button class="btn-primary" onclick="cockpitAsk()" style="background:var(--green);color:#0C0C0E">&#128269; Ask Wiki</button>' +
+        '<button class="btn-secondary" onclick="openTopicsBrowser()" style="font-size:12px;padding:5px 12px">Topics</button>' +
         '</div>' +
         '<div class="cockpit-status" id="quick-status"></div>' +
         '</div>' +
@@ -3319,6 +3641,7 @@ function dashboardHTML(): string {
         var discP = loadDiscoveries();
         loadCockpitConnections();
         loadTemplates();
+        loadTopics().catch(function(){});
 
         await statsP;
         try { initMiniGraph(); } catch(e) { console.error('miniGraph:', e); }
@@ -3346,6 +3669,56 @@ function dashboardHTML(): string {
         detect.textContent = 'Text detected — will extract entities + synthesize insights';
         if (resBtn) resBtn.innerHTML = '&#9889; Research Note';
       }
+    }
+
+    var _topicList = null;
+    async function loadTopics() {
+      if (_topicList) return _topicList;
+      try {
+        var r = await fetch(api('/api/topics'));
+        var d = await r.json();
+        _topicList = d.topics || [];
+      } catch(e) { _topicList = []; }
+      var dl = document.getElementById('topic-list');
+      if (dl) {
+        dl.innerHTML = _topicList.map(function(t){
+          return '<option value="'+t.slug+'">'+t.slug+' ('+t.count+')</option>';
+        }).join('');
+      }
+      return _topicList;
+    }
+    function onTopicInput() {
+      var input = document.getElementById('cockpit-topic');
+      var link = document.getElementById('topic-open');
+      if (!input || !link) return;
+      var v = (input.value || '').trim().toLowerCase().replace(/^topic\\//, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+      if (v) {
+        link.style.display = 'inline';
+        link.href = BASE + '/topic/' + encodeURIComponent(v);
+        link.textContent = 'Open topic/' + v + ' \u2192';
+      } else {
+        link.style.display = 'none';
+      }
+    }
+    async function openTopicsBrowser() {
+      var topics = await loadTopics();
+      var box = document.getElementById('qa-answer');
+      if (!box) return;
+      box.style.display = 'block';
+      if (!topics || topics.length === 0) {
+        box.innerHTML = '<div style="padding:16px;color:var(--text-dim);font-size:13px">No topics yet. Type one in the Topic field (e.g. <code>cloudflare-agent-week</code>) and run Research on a URL or note — it will be grouped under that topic.</div>';
+        return;
+      }
+      var html = '<div style="padding:20px"><div style="font-size:12px;font-weight:700;color:var(--text-dim);text-transform:uppercase;letter-spacing:1px;margin-bottom:12px">Topics</div>';
+      html += '<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px">';
+      html += topics.map(function(t){
+        return '<a href="'+BASE+'/topic/'+encodeURIComponent(t.slug)+'" target="_blank" style="display:block;padding:12px 14px;background:var(--bg-card);border:1px solid var(--border);border-radius:6px;text-decoration:none;color:var(--text)">' +
+               '<div style="font-weight:600;font-size:14px">topic/'+t.slug+'</div>' +
+               '<div style="font-size:12px;color:var(--text-dim);margin-top:4px">'+t.count+' captures · latest '+(t.latest||'').slice(0,10)+'</div>' +
+               '</a>';
+      }).join('');
+      html += '</div></div>';
+      box.innerHTML = html;
     }
 
     function cockpitAsk() {
@@ -3863,6 +4236,9 @@ function dashboardHTML(): string {
 
       var isURL = /^https?:[/][/]/.test(val);
 
+      var topicRaw = (document.getElementById('cockpit-topic') || {}).value || '';
+      var topic = topicRaw.trim().toLowerCase().replace(/^topic\\//, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+
       try {
         // Step 1: Fast ingest (reliable — uses proven ingest pipeline)
         var ingestRes;
@@ -3870,7 +4246,7 @@ function dashboardHTML(): string {
           ingestRes = await fetch(api('/api/ingest/url'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ url: val }),
+            body: JSON.stringify({ url: val, topic: topic || undefined }),
           });
         } else {
           var timestamp = new Date().toISOString().slice(0, 10);
@@ -3880,7 +4256,8 @@ function dashboardHTML(): string {
             body: JSON.stringify({
               filename: 'intake-' + timestamp + '-' + Date.now() + '.md',
               content: val,
-              source_type: 'note'
+              source_type: 'note',
+              topic: topic || undefined,
             }),
           });
         }
@@ -3954,8 +4331,11 @@ function dashboardHTML(): string {
         // Show results
         var msg = (isURL ? 'URL ingested! ' : 'Note saved! ') + ingestData.entities_extracted + ' entities, ' + created.length + ' pages created, ' + updated.length + ' updated.';
         if (relatedPages && relatedPages.length > 0) msg += ' ' + relatedPages.length + ' prior connections found.';
+        if (topic) msg += ' Tagged topic/' + topic + '.';
         status.className = 'cockpit-status ok';
-        status.textContent = msg;
+        status.innerHTML = escHtml(msg) +
+          (topic ? ' <a href="'+BASE+'/topic/'+encodeURIComponent(topic)+'" target="_blank" style="color:var(--accent);margin-left:8px;font-weight:600">View topic &rarr;</a>' : '');
+        _topicList = null; // invalidate cache so next autocomplete refreshes
 
         // Show created pages + related knowledge in the answer box
         if (qaBox && (allSlugs.length > 0 || relatedHtml)) {

@@ -211,6 +211,34 @@ Like an autonomous ML researcher running fixed-time experiments, analyze the sou
 
 Be thorough on extraction, opinionated on synthesis. Prefer creating separate pages for distinct concepts. Each page should be self-contained but richly cross-linked. The research synthesis should reveal non-obvious patterns.`;
 
+export const TOPIC_DISTILL_PROMPT = `You are a workflow distillation engine. Given a set of captures (tweets, articles, notes) that the user has grouped under a single topic, produce a concise, practical workflow-improvement brief that the user can drop into a Claude Code session to update their project.
+
+Rules:
+- Ground everything in the captures provided — do not invent facts.
+- Cite captures inline as [C1], [C2], etc. (the caller will pass them in that order).
+- Be opinionated about what matters. Cut noise.
+- If captures disagree, surface the disagreement briefly.
+- Produce markdown only — no JSON wrapper, no preamble, no "Here is..." text.
+
+Structure the output as:
+
+# {{Topic}} — Workflow Update (YYYY-MM-DD)
+
+## What changed
+3-7 bullets. The new primitives, APIs, patterns, or news from these captures.
+
+## New primitives worth adopting
+For each, name it, what it replaces or extends, and a minimal usage sketch (code block if applicable).
+
+## Updated code patterns
+Short before/after or "use this shape now" snippets where the captures imply a change.
+
+## Concrete next actions
+Bulleted, imperative, specific to the user's existing work. Each item should be something Claude Code could do in one session.
+
+## Sources
+Numbered list [C1], [C2]... with the source URL (or note title) for each capture.`;
+
 export const PAGE_GENERATE_PROMPT = `You are a wiki page author. Generate a comprehensive wiki page for the given topic.
 
 Rules:

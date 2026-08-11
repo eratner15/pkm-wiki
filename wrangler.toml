@@ -19,10 +19,9 @@ bucket_name = "pkm-wiki-storage"
 pattern = "pkm.cafecito-ai.com/*"
 zone_id = "3f23c3413d5efddec61c297baffa8c0a"
 
-# Vectorize — uncomment after creating index: npx wrangler vectorize create pkm-wiki-pages --dimensions 768 --metric cosine
-# [[vectorize]]
-# binding = "VECTORIZE"
-# index_name = "pkm-wiki-pages"
+[[vectorize]]
+binding = "VECTORIZE"
+index_name = "pkm-wiki-pages"
 
 [[queues.producers]]
 queue = "pkm-wiki-jobs"

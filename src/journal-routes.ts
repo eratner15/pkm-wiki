@@ -10,6 +10,8 @@ import { importJournalFromWiki, importLibrary } from './journal-library';
 import { buildReminder, sendNightlyReminder } from './journal-reminder';
 import { getKeepsake, keepsakeEstimate, KeepsakeStep, updateKeepsakeEdits, writeKeepsake } from './journal-keepsake';
 import { keepsakeHTML } from './journal-keepsake-book';
+import { importReadingFromWiki, listBooks, syncReadwise } from './journal-reading';
+import { readingBookHTML, readingLibraryHTML } from './journal-reading-page';
 
 const PERIODS: InsightPeriod[] = ['week', 'month', 'quarter', 'all'];
 
@@ -26,6 +28,12 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
   if (method === 'GET' && path === '/journal') return html(journalPageHTML());
   if (method === 'GET' && (path === '/journal/people' || path.startsWith('/journal/people/'))) return html(peoplePageHTML());
   if (method === 'GET' && path === '/journal/keepsake') return html(await keepsakeHTML(env));
+  if (method === 'GET' && path === '/journal/reading') return html(await readingLibraryHTML(env, url));
+  const readingBook = path.match(/^\/journal\/reading\/([a-z0-9-]+)$/);
+  if (method === 'GET' && readingBook) {
+    const page = await readingBookHTML(env, readingBook[1]);
+    return page ? html(page) : html('<p style="font-family:sans-serif;padding:24px">Book not found. <a href="/journal/reading">Back to Reading</a></p>', 404);
+  }
   const book = path.match(/^\/journal\/book\/(\d{4})$/);
   if (method === 'GET' && book) {
     const page = await bookHTML(env, book[1]);
@@ -132,6 +140,19 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
     // Daybook volumes
     if (method === 'GET' && path === '/api/journal/books') return json({ years: await bookYears(env) });
 
+    // Reading library
+    if (method === 'GET' && path === '/api/journal/reading') {
+      return json(await listBooks(env, { q: url.searchParams.get('q') || undefined, sort: url.searchParams.get('sort') || undefined }));
+    }
+    if (method === 'POST' && path === '/api/journal/reading/import-wiki') {
+      const body = await request.json().catch(() => ({})) as any;
+      return json(await importReadingFromWiki(env, { offset: Number(body.offset) || 0, limit: Number(body.limit) || 40 }));
+    }
+    if (method === 'POST' && path === '/api/journal/reading/sync') {
+      const body = await request.json().catch(() => ({})) as any;
+      return json(await syncReadwise(env, { full: !!body.full }));
+    }
+
     // Keepsake book
     if (method === 'GET' && path === '/api/journal/keepsake') {
       const k = await getKeepsake(env);
@@ -180,7 +201,7 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
   }
 }
 
-/** Cron: hourly Notion sync; Monday weekly insight; nightly reminder. */
+/** Cron: hourly Readwise and Notion sync; Monday weekly insight; nightly reminder. */
 export async function runJournalCron(cron: string, env: Env): Promise<void> {
   if (cron === '7 1 * * *') {
     await sendNightlyReminder(env).catch(e => console.error('JOURNAL_REMINDER', e?.message));
@@ -189,6 +210,10 @@ export async function runJournalCron(cron: string, env: Env): Promise<void> {
   if (cron === '10 12 * * 1') {
     if (env.ANTHROPIC_API_KEY) await generateInsight(env, 'week').catch(e => console.error('JOURNAL_WEEKLY', e?.message));
     return;
+  }
+  if ((env as any).READWISE_TOKEN) {
+    const r = await syncReadwise(env).catch(e => { console.error('READWISE_SYNC', e?.message); return null; });
+    if (r) console.log('READWISE_SYNC', JSON.stringify(r));
   }
   if (env.NOTION_TOKEN) {
     const r = await syncJournalFromNotion(env, { bodyLimit: 25 }).catch(e => { console.error('JOURNAL_SYNC', e?.message); return null; });

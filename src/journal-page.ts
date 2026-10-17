@@ -201,6 +201,7 @@ table.prev th { color: var(--dim); font-weight: 600; }
       <span class="eyebrow" id="today-label"></span>
       <a class="btn-ghost" href="/journal/people">People</a>
       <span id="book-links"></span>
+      <a class="btn-ghost" href="/journal/reading">Reading</a>
       <a class="btn-ghost" href="/journal/keepsake">Keepsake</a>
       <button class="btn-ghost" onclick="toggleReminder()">Reminder</button>
       <button class="btn-ghost" onclick="toggleImport(true)">Import</button>

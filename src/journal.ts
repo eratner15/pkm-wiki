@@ -17,10 +17,10 @@ import { Env } from './types';
 import { ANTHROPIC_GATEWAY_BASE } from './ai-gateway';
 
 const NOTION_VERSION = '2022-06-28';
-const DEFAULT_MODEL = 'claude-opus-5-5';
+export const DEFAULT_MODEL = 'claude-opus-5-5';
 
 // $ per million tokens (input, output) for the cost readout on the dashboard
-const PRICES: Record<string, [number, number]> = {
+export const PRICES: Record<string, [number, number]> = {
   'claude-opus-5-5': [4, 20],
   'claude-sonnet-5-5': [2, 10],
   'claude-haiku-5-5': [0.1, 0.5],
@@ -119,12 +119,12 @@ export async function ensureJournalSchema(env: Env): Promise<void> {
   schemaReady = true;
 }
 
-async function getState(env: Env, key: string): Promise<string | null> {
+export async function getState(env: Env, key: string): Promise<string | null> {
   const row = await env.DB.prepare('SELECT value FROM journal_state WHERE key = ?').bind(key).first();
   return (row?.value as string) ?? null;
 }
 
-async function setState(env: Env, key: string, value: string): Promise<void> {
+export async function setState(env: Env, key: string, value: string): Promise<void> {
   await env.DB.prepare(
     'INSERT INTO journal_state (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
   ).bind(key, value).run();
@@ -667,7 +667,7 @@ export async function journalStats(env: Env, today = todayLocal()) {
 // Claude
 // ---------------------------------------------------------------------------
 
-function claudeClient(env: Env): Anthropic {
+export function claudeClient(env: Env): Anthropic {
   if (!env.ANTHROPIC_API_KEY) throw new Error('ANTHROPIC_API_KEY is not set');
   return new Anthropic({ apiKey: env.ANTHROPIC_API_KEY, baseURL: ANTHROPIC_GATEWAY_BASE });
 }
@@ -677,7 +677,7 @@ function costOf(model: string, usage: { input_tokens: number; output_tokens: num
   return (usage.input_tokens * pin + usage.output_tokens * pout) / 1_000_000;
 }
 
-async function logActivity(env: Env, action: string, details: unknown): Promise<void> {
+export async function logActivity(env: Env, action: string, details: unknown): Promise<void> {
   try {
     await env.DB.prepare('INSERT INTO activity_log (action, details) VALUES (?, ?)')
       .bind(action, JSON.stringify(details)).run();

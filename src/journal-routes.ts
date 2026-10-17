@@ -8,6 +8,8 @@ import { deletePerson, getPerson, listPeople, rebuildMentions, suggestPeople, up
 import { bookHTML, bookYears } from './journal-book';
 import { importJournalFromWiki, importLibrary } from './journal-library';
 import { buildReminder, sendNightlyReminder } from './journal-reminder';
+import { getKeepsake, keepsakeEstimate, KeepsakeStep, updateKeepsakeEdits, writeKeepsake } from './journal-keepsake';
+import { keepsakeHTML } from './journal-keepsake-book';
 
 const PERIODS: InsightPeriod[] = ['week', 'month', 'quarter', 'all'];
 
@@ -23,6 +25,7 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
   const html = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
   if (method === 'GET' && path === '/journal') return html(journalPageHTML());
   if (method === 'GET' && (path === '/journal/people' || path.startsWith('/journal/people/'))) return html(peoplePageHTML());
+  if (method === 'GET' && path === '/journal/keepsake') return html(await keepsakeHTML(env));
   const book = path.match(/^\/journal\/book\/(\d{4})$/);
   if (method === 'GET' && book) {
     const page = await bookHTML(env, book[1]);
@@ -128,6 +131,22 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
 
     // Daybook volumes
     if (method === 'GET' && path === '/api/journal/books') return json({ years: await bookYears(env) });
+
+    // Keepsake book
+    if (method === 'GET' && path === '/api/journal/keepsake') {
+      const k = await getKeepsake(env);
+      return json({ estimate: await keepsakeEstimate(env), years_at: k.years?.at || null, connections_at: k.connections?.at || null, edits: k.edits || {} });
+    }
+    if (method === 'POST' && path === '/api/journal/keepsake/write') {
+      const body = await request.json().catch(() => ({})) as any;
+      const step = body.step as KeepsakeStep;
+      if (step !== 'years' && step !== 'connections') return json({ error: 'step must be years or connections' }, 400);
+      if (step === 'connections' && !(await getKeepsake(env)).years) return json({ error: 'Write the years first' }, 400);
+      return json(await writeKeepsake(env, step));
+    }
+    if (method === 'POST' && path === '/api/journal/keepsake/edits') {
+      return json({ edits: await updateKeepsakeEdits(env, await request.json().catch(() => ({}))) });
+    }
 
     // Nightly reminder
     if (method === 'GET' && path === '/api/journal/reminder') return json({ text: await buildReminder(env) });

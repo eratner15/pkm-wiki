@@ -515,7 +515,12 @@ function isoDay(d: Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-export async function journalStats(env: Env, today = isoDay(new Date())) {
+/** Today's date (YYYY-MM-DD) in the journal's home time zone, so a 10 pm entry is not filed as tomorrow. */
+export function todayLocal(now = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+}
+
+export async function journalStats(env: Env, today = todayLocal()) {
   await ensureJournalSchema(env);
   const q = (sql: string, ...b: unknown[]) => env.DB.prepare(sql).bind(...b);
   const yearAgo = isoDay(new Date(Date.parse(today) - 364 * 86400_000));
@@ -581,6 +586,17 @@ export async function journalStats(env: Env, today = isoDay(new Date())) {
     try { aiCost += JSON.parse(r.details).cost_usd || 0; } catch {}
   }
 
+  // People from the people index (journal-people.ts) when it exists; else the Notion relation names.
+  let peopleRows = rows(people);
+  try {
+    const idx = await env.DB.prepare(
+      `SELECT p.id, p.name, COUNT(*) AS n, MAX(e.entry_date) AS last FROM journal_mentions m
+       JOIN journal_persons p ON p.id = m.person_id JOIN journal_entries e ON e.id = m.entry_id
+       GROUP BY p.id ORDER BY n DESC, last DESC LIMIT 10`
+    ).all();
+    if (idx.results?.length) peopleRows = idx.results as any[];
+  } catch { /* people index not created yet */ }
+
   return {
     today,
     totals: { ...(rows(totals)[0] || {}), current_streak: current, longest_streak: longest },
@@ -595,7 +611,7 @@ export async function journalStats(env: Env, today = isoDay(new Date())) {
     recent: rows(recent),
     next_actions: rows(actions),
     lessons: rows(lessons),
-    people: rows(people),
+    people: peopleRows,
     ai_cost_month_usd: Math.round(aiCost * 1000) / 1000,
     model: env.JOURNAL_MODEL || DEFAULT_MODEL,
     notion_connected: !!env.NOTION_TOKEN,
@@ -687,7 +703,7 @@ Rules:
 
 export async function captureEntry(env: Env, input: { text: string; date?: string; day_score?: number | null; energy?: string | null }) {
   await ensureJournalSchema(env);
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(input.date || '') ? input.date! : isoDay(new Date());
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(input.date || '') ? input.date! : todayLocal();
   const id = `pkm${date.replace(/-/g, '')}`;
   const existing = await env.DB.prepare('SELECT body, day_score FROM journal_entries WHERE id = ?').bind(id).first();
   const body = existing?.body ? `${existing.body}\n\n${input.text.trim()}` : input.text.trim();
@@ -790,7 +806,7 @@ export async function getInsight(env: Env, period: InsightPeriod) {
 
 export async function generateInsight(env: Env, period: InsightPeriod, opts: { force?: boolean; today?: string } = {}) {
   await ensureJournalSchema(env);
-  const today = opts.today || isoDay(new Date());
+  const today = opts.today || todayLocal();
   const { from, key } = periodRange(period, today);
 
   const latest = await env.DB.prepare(

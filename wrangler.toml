@@ -40,8 +40,9 @@ binding = "CACHE"
 id = "9663d2839a3748238f8bfa9f767a3252"
 
 [triggers]
-# Hourly: pull changed journal pages from Notion. Monday 12:10 UTC: weekly journal insight.
-crons = ["7 * * * *", "10 12 * * 1"]
+# Hourly: Notion sync (only with NOTION_TOKEN). Monday 12:10 UTC: weekly insight.
+# 01:07 UTC: nightly journal reminder on Telegram (9:07 pm New York in summer, 8:07 pm in winter).
+crons = ["7 * * * *", "10 12 * * 1", "7 1 * * *"]
 
 [vars]
 WIKI_OWNER = "evan"

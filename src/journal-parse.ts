@@ -22,8 +22,12 @@ export interface ParsedEntry {
 }
 
 export interface ParseResult {
+  /** Secrets (API keys, tokens, passwords) removed before anything leaves the browser. */
+  redactions: number;
   entries: ParsedEntry[];
   templates: { name: string; body: string }[];
+  /** Whole non-day files (books, frameworks, notes) for the Library. */
+  pages: { title: string; body: string }[];
   undated: { title: string; chars: number }[];
 }
 
@@ -177,8 +181,21 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
     return fields;
   }
 
+  // Remove secrets: labelled values ("api key: …", "token=…", "password …") and well-known key formats.
+  let redactions = 0;
+  const redact = (text: string) => text
+    .replace(/\b(api[ _-]?key|api[ _-]?token|access[ _-]?token|auth[ _-]?token|secret|token|password|passwd|pwd|bearer)(\s*(?:[:=]|is)?\s*["'`]?)([^\s"'`]{8,})/gi,
+      (m, label, sep, val) => (/^(of|the|for|and|to|is|was|from|with|redacted)$/i.test(val) ? m : (redactions++, label + sep + '[redacted]')))
+    .replace(/\b(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,})/g,
+      () => (redactions++, '[redacted]'))
+    // Long random-looking strings outside links (mixed letters and digits, 32+ chars).
+    .replace(/(^|[\s(:="'])([A-Za-z0-9_-]{32,})(?=$|[\s),."'])/gm, (m, pre, tok) =>
+      /[A-Za-z]/.test(tok) && /\d/.test(tok) && !/^[0-9a-f]{32}$/i.test(tok) ? (redactions++, pre + '[redacted]') : m);
+  files = files.map(f => ({ name: f.name, text: redact(f.text) }));
+
   const entries: ParsedEntry[] = [];
   const templates: { name: string; body: string }[] = [];
+  const pages: { title: string; body: string }[] = [];
   const undated: { title: string; chars: number }[] = [];
   const seen: Record<string, number> = {};
 
@@ -209,9 +226,16 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
       continue;
     }
 
+    // A file with no dated heading is one knowledge page, kept whole for the Library.
+    const lines = text.split('\n');
+    if (!lines.some(l => { const hm = l.match(/^#{1,6}\s+(.*)$/); return !!(hm && parseDate(hm[1])); })) {
+      const title = clean(base.replace(/\.(md|markdown|txt)$/i, ''));
+      if (text.trim()) pages.push({ title, body: text.trim() });
+      continue;
+    }
+
     // Split one file into sections at date headings. A day ends at the next heading
     // of the same or a higher level.
-    const lines = text.split('\n');
     let cur: { date: string | null; title: string; level: number; lines: string[] } | null = null;
     const flush = () => {
       if (!cur) return;
@@ -236,5 +260,5 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
   }
 
   entries.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  return { entries, templates, undated };
+  return { redactions, entries, templates, pages, undated };
 }

@@ -21,7 +21,11 @@ Filing entries through Notion was slow, because the Notion connector asks for ac
 | `src/journal.ts` | Worker | Schema, Notion sync, import, stats, Claude calls |
 | `src/journal-routes.ts` | Worker | `/journal` page, `/api/journal/*`, cron |
 | `src/journal-page.ts` | Worker | Dashboard HTML |
-| `src/journal-parse.ts` | Browser | Markdown parser for the Import panel (`npm test` runs its tests) |
+| `src/journal-parse.ts` | Browser | Markdown parser for the Import panel, with secret removal (`npm test` runs its tests) |
+| `src/journal-people.ts` | Worker | People registry and day links |
+| `src/journal-book.ts` | Worker | Printable Daybook volumes |
+| `src/journal-reminder.ts` | Worker | Nightly Telegram reminder and Telegram journal replies |
+| `src/journal-library.ts` | Worker | Duplicate-safe import of knowledge pages into the wiki |
 | `scripts/import-notion-export.mjs` | Local | Optional: import a Notion "Markdown & CSV" export from the command line |
 
 The Worker creates the tables on first use. `schema.sql` holds the same statements.
@@ -48,6 +52,7 @@ The Worker creates the tables on first use. `schema.sql` holds the same statemen
 |---|---|
 | `7 * * * *` | Notion sync, only when `NOTION_TOKEN` is set |
 | `10 12 * * 1` | Weekly insight for the last 7 days |
+| `7 1 * * *` | Nightly Telegram reminder with "on this day" |
 
 ## One-time setup: import your markdown
 
@@ -82,6 +87,43 @@ The entry box shows template buttons. A click adds the template to the text.
 - Templates found in your import
 
 When a new thorn repeats a cause you logged before, the page offers the Issue Log. It offers the Pain Button when the thorn theme is Mindset.
+
+## People
+
+`/journal/people` lists people and links each one to every day that mentions them.
+
+1. Add a person with a name and aliases, such as initials or a nickname. The page also suggests names that recur in your `[[links]]`.
+2. A day links to a person when any name form appears as a whole word in the day's fields or notes. Matching is case-sensitive, so "Bob" does not match "bobbing".
+3. Each person page shows the number of days, first and last day, your average mood on those days against your overall average, Rose and Thorn themes, people seen together, and every day with an excerpt.
+
+Links refresh after every import and every new entry. Names are stored in D1, not in code.
+
+## Daybook volumes
+
+`/journal/book/2020`, `/journal/book/2021` and so on. The **Daybook** menu on `/journal` lists the years.
+
+Each volume has a cover, a year-at-a-glance page (days, average mood, best and hardest days, people of the year, lessons, contents) and one chapter per month. Click **Print or save as PDF**. Pages are 6 × 9 inches. Roam label blocks that are already shown as Rose, Thorn, Wins, Lesson and Next are not repeated in the notes.
+
+## Nightly reminder
+
+Every evening at 01:07 UTC (9:07 pm New York in summer, 8:07 pm in winter), the existing Telegram bot sends:
+
+- a check-in line, or "Today is already logged"
+- what you wrote on the same date in past years, with the lesson
+- open next actions from the last 7 days
+
+Reply to that message, or send `/j <your day>`, and Claude files it as today's entry (New York date). `/onthisday` sends the past-years part at any time. On `/journal`, **Reminder** shows a preview and a **Send it now** button. It uses the `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` secrets that already exist.
+
+## Library
+
+The Import panel also finds non-day pages in your export (books, frameworks, notes). **Import N pages to the Library** adds them to the wiki as pages, with the text in R2 at `wiki/<slug>.md`.
+
+- It uses the same slug rule as the older Roam import, so pages from that import are recognized.
+- A page whose slug already exists is skipped. It is never appended to or overwritten, so you can run the import again safely.
+
+## Secrets in the export
+
+The parser removes API keys, tokens and passwords in the browser, before anything is uploaded: labelled values ("API key: …", "token=…"), known key formats (`sk-`, `ghp_`, `xox…`, `AKIA…`, JWTs) and long random strings outside links. The preview shows how many were removed. Rotate any key that was in an export.
 
 ## Optional: Notion sync
 

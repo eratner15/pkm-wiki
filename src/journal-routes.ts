@@ -3,7 +3,11 @@ import {
   askJournal, captureEntry, enrichEntries, enrichEstimate, generateInsight, getEntry, getInsight, importEntries,
   InsightPeriod, journalStats, listEntries, listTemplates, saveTemplates, syncJournalFromNotion,
 } from './journal';
-import { journalPageHTML } from './journal-page';
+import { journalPageHTML, peoplePageHTML } from './journal-page';
+import { deletePerson, getPerson, listPeople, rebuildMentions, suggestPeople, upsertPerson } from './journal-people';
+import { bookHTML, bookYears } from './journal-book';
+import { importLibrary } from './journal-library';
+import { buildReminder, sendNightlyReminder } from './journal-reminder';
 
 const PERIODS: InsightPeriod[] = ['week', 'month', 'quarter', 'all'];
 
@@ -16,8 +20,13 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
   const path = url.pathname.replace(/\/$/, '') || '/';
   const method = request.method;
 
-  if (method === 'GET' && path === '/journal') {
-    return new Response(journalPageHTML(), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  const html = (body: string, status = 200) => new Response(body, { status, headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+  if (method === 'GET' && path === '/journal') return html(journalPageHTML());
+  if (method === 'GET' && (path === '/journal/people' || path.startsWith('/journal/people/'))) return html(peoplePageHTML());
+  const book = path.match(/^\/journal\/book\/(\d{4})$/);
+  if (method === 'GET' && book) {
+    const page = await bookHTML(env, book[1]);
+    return page ? html(page) : html('<p style="font-family:sans-serif;padding:24px">No entries for that year. <a href="/journal">Back</a></p>', 404);
   }
   if (!path.startsWith('/api/journal')) return null;
 
@@ -46,12 +55,14 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
       const body = await request.json() as any;
       if (!body?.text || typeof body.text !== 'string') return json({ error: 'text is required' }, 400);
       const score = body.day_score == null ? null : Number(body.day_score);
-      return json(await captureEntry(env, {
+      const captured = await captureEntry(env, {
         text: body.text.slice(0, 20_000),
         date: body.date,
         day_score: score != null && score >= 1 && score <= 10 ? score : null,
         energy: ['High', 'Medium', 'Low'].includes(body.energy) ? body.energy : null,
-      }));
+      });
+      await rebuildMentions(env);
+      return json(captured);
     }
 
     if (method === 'POST' && path === '/api/journal/sync') {
@@ -65,7 +76,9 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
     if (method === 'POST' && path === '/api/journal/import') {
       const body = await request.json() as any;
       if (!Array.isArray(body?.entries)) return json({ error: 'entries array is required' }, 400);
-      return json(await importEntries(env, body.entries.slice(0, 500)));
+      const result = await importEntries(env, body.entries.slice(0, 500));
+      if (body.last !== false) await rebuildMentions(env);
+      return json(result);
     }
 
     if (path === '/api/journal/insights') {
@@ -96,6 +109,37 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
       if (method === 'POST') return json(await enrichEntries(env));
     }
 
+    // People
+    if (path === '/api/journal/people') {
+      if (method === 'GET') return json(await listPeople(env));
+      if (method === 'POST') {
+        const body = await request.json() as any;
+        return json({ person: await upsertPerson(env, { name: body.name, aliases: body.aliases, circle: body.circle, note: body.note, id: body.id }) });
+      }
+    }
+    if (method === 'GET' && path === '/api/journal/people/suggest') return json({ suggestions: await suggestPeople(env) });
+    if (method === 'POST' && path === '/api/journal/people/rebuild') return json(await rebuildMentions(env));
+    const person = path.match(/^\/api\/journal\/people\/([a-z0-9-]+)$/);
+    if (person && method === 'GET') {
+      const p = await getPerson(env, person[1]);
+      return p ? json({ person: p }) : json({ error: 'Person not found' }, 404);
+    }
+    if (person && method === 'DELETE') { await deletePerson(env, person[1]); return json({ ok: true }); }
+
+    // Daybook volumes
+    if (method === 'GET' && path === '/api/journal/books') return json({ years: await bookYears(env) });
+
+    // Nightly reminder
+    if (method === 'GET' && path === '/api/journal/reminder') return json({ text: await buildReminder(env) });
+    if (method === 'POST' && path === '/api/journal/reminder') return json(await sendNightlyReminder(env));
+
+    // Library (Roam knowledge pages into the wiki)
+    if (method === 'POST' && path === '/api/journal/library') {
+      const body = await request.json() as any;
+      if (!Array.isArray(body?.pages)) return json({ error: 'pages array is required' }, 400);
+      return json(await importLibrary(env, body.pages.slice(0, 100), { dryRun: !!body.dry_run }));
+    }
+
     if (method === 'POST' && path === '/api/journal/ask') {
       const body = await request.json() as any;
       if (!body?.question) return json({ error: 'question is required' }, 400);
@@ -109,8 +153,12 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
   }
 }
 
-/** Cron: hourly Notion sync; Monday weekly insight. */
+/** Cron: hourly Notion sync; Monday weekly insight; nightly reminder. */
 export async function runJournalCron(cron: string, env: Env): Promise<void> {
+  if (cron === '7 1 * * *') {
+    await sendNightlyReminder(env).catch(e => console.error('JOURNAL_REMINDER', e?.message));
+    return;
+  }
   if (cron === '10 12 * * 1') {
     if (env.ANTHROPIC_API_KEY) await generateInsight(env, 'week').catch(e => console.error('JOURNAL_WEEKLY', e?.message));
     return;

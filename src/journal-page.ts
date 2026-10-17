@@ -136,6 +136,9 @@ table.prev th { color: var(--dim); font-weight: 600; }
     <h1>Living <span>Journal</span></h1>
     <div class="top-actions">
       <span class="status" id="sync-status"></span>
+      <a class="btn-ghost" href="/journal/people">People</a>
+      <span id="book-links"></span>
+      <button class="btn-ghost" onclick="toggleReminder()">Reminder</button>
       <button class="btn-ghost" onclick="toggleImport(true)">Import</button>
       <button class="btn-ghost" id="sync-btn" onclick="syncNow()" style="display:none">Sync Notion</button>
       <a class="btn-ghost" href="/">Wiki</a>
@@ -155,6 +158,13 @@ table.prev th { color: var(--dim); font-weight: 600; }
       <b>Drop files here</b> or click to choose · .md, .txt or .zip
     </label>
     <div id="import-preview"></div>
+  </section>
+
+  <section class="card" id="reminder-card" style="display:none;margin-bottom:14px">
+    <div class="card-head"><div><h2>Nightly reminder</h2><div class="sub">Sent on Telegram every evening (01:07 UTC, about 9 pm in New York). Reply to it, or send /j and your day, and it is filed as today's entry. /onthisday shows past years.</div></div>
+      <button class="btn-ghost" onclick="toggleReminder()">Close</button></div>
+    <pre id="reminder-text" style="white-space:pre-wrap;font-family:var(--sans);font-size:14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px"></pre>
+    <div class="cap-row"><span class="status" id="reminder-status"></span><span style="flex:1"></span><button class="btn" onclick="sendReminder(this)">Send it now</button></div>
   </section>
 
   <!-- Capture -->
@@ -387,8 +397,9 @@ function render() {
   }).join('') || empty('No lessons logged yet');
 
   $('people').innerHTML = (S.people || []).map(function(p) {
-    return '<li style="display:flex;justify-content:space-between"><span>' + esc(p.name) + '</span><span class="mono muted">' + p.n + ' days · last ' + esc(p.last) + '</span></li>';
-  }).join('') || empty('No people linked yet');
+    var name = p.id ? '<a href="/journal/people/' + esc(p.id) + '">' + esc(p.name) + '</a>' : esc(p.name);
+    return '<li style="display:flex;justify-content:space-between"><span>' + name + '</span><span class="mono muted">' + p.n + ' days · last ' + esc(p.last) + '</span></li>';
+  }).join('') || empty('No people yet. <a href="/journal/people">Add people</a>');
 
   renderRecent(S.recent);
   var w = (S.energy || []);
@@ -685,10 +696,26 @@ function readFiles(list) {
     showPreview();
   }).catch(function(e) { $('import-preview').innerHTML = '<div class="skeleton">Could not read the files: ' + esc(e.message) + '</div>'; });
 }
+function runLibrary() {
+  var pages = PARSED.pages, i = 0, made = 0, had = 0; $('library-btn').disabled = true;
+  function next() {
+    if (i >= pages.length) { $('library-status').textContent = 'Library: ' + made + ' new pages added, ' + had + ' were already in the wiki.'; return; }
+    var batch = pages.slice(i, i + 40); i += 40;
+    $('library-status').textContent = 'Importing ' + Math.min(i, pages.length) + ' of ' + pages.length + '…';
+    return post('/api/journal/library', { pages: batch }).then(function(r) { made += r.created; had += r.skipped_existing; return next(); });
+  }
+  next().catch(function(e) { $('library-status').textContent = 'Library import stopped: ' + e.message; $('library-btn').disabled = false; });
+}
 function showPreview() {
   var p = PARSED, n = p.entries.length;
   var count = function(f) { return p.entries.filter(function(e) { return e[f] != null && e[f] !== '' && !(Array.isArray(e[f]) && !e[f].length); }).length; };
-  if (!n) {
+  if (!n && p.pages.length) {
+    $('import-preview').innerHTML = '<p style="margin-top:14px">No dated days in these files. <b class="mono">' + p.pages.length + '</b> knowledge pages for the Library.</p>' +
+      '<div class="cap-row"><span class="status" id="library-status">Pages already in the wiki are skipped, never overwritten.</span><span style="flex:1"></span>' +
+      '<button class="btn" id="library-btn" onclick="runLibrary()">Import ' + p.pages.length + ' pages to the Library</button></div>';
+    return;
+  }
+  if (!n && !p.pages.length) {
     $('import-preview').innerHTML = '<div class="skeleton">No dated days found. Days need a date as the file name or as a heading, for example "## Tue, Jul 20, 2021" or "July 20th, 2021".' +
       (p.undated.length ? '<br>Sections without a date: ' + p.undated.slice(0, 8).map(function(u) { return esc(u.title); }).join(', ') : '') + '</div>';
     return;
@@ -696,13 +723,17 @@ function showPreview() {
   var fields = [['Rose', 'rose'], ['Thorn', 'thorn'], ['Bud', 'bud'], ['Wins', 'key_wins'], ['Lesson', 'lesson'], ['Summary', 'summary'], ['Mood', 'mood'], ['Day score', 'day_score'], ['Tags', 'tags'], ['People', 'people']];
   var html = '<p style="margin-top:14px"><b class="mono">' + n + '</b> days from <b>' + esc(p.entries[0].date) + '</b> to <b>' + esc(p.entries[n - 1].date) + '</b>' +
     (p.templates.length ? ' · <b class="mono">' + p.templates.length + '</b> template' + (p.templates.length > 1 ? 's' : '') : '') +
-    (p.undated.length ? ' · ' + p.undated.length + ' undated sections skipped' : '') + '</p>' +
+    (p.pages.length ? ' · <b class="mono">' + p.pages.length + '</b> knowledge pages for the Library' : '') +
+    (p.undated.length ? ' · ' + p.undated.length + ' undated sections skipped' : '') +
+    (p.redactions ? ' · <b class="mono">' + p.redactions + '</b> secrets (API keys, tokens) removed before upload' : '') + '</p>' +
     '<div class="legend" style="margin-top:4px">' + fields.map(function(f) { return '<span>' + f[0] + ' <b class="mono">' + count(f[1]) + '</b></span>'; }).join('') + '</div>' +
     '<table class="prev"><tr><th>Date</th><th>Rose</th><th>Thorn</th><th>Notes</th></tr>' +
     p.entries.slice(-5).reverse().map(function(e) {
       return '<tr><td class="mono">' + esc(e.date) + '</td><td>' + esc(e.rose || '') + '</td><td>' + esc(e.thorn || '') + '</td><td class="muted">' + esc(String(e.body || '').slice(0, 90)) + '</td></tr>';
     }).join('') + '</table>' +
     '<div class="cap-row"><span class="status" id="import-status"></span><span style="flex:1"></span><button class="btn" id="import-btn" onclick="runImport()">Import ' + n + ' days</button></div>';
+  if (p.pages.length) html += '<div class="cap-row"><span class="status" id="library-status">Pages already in the wiki are skipped, never overwritten.</span><span style="flex:1"></span>' +
+    '<button class="btn-ghost" id="library-btn" onclick="runLibrary()">Import ' + p.pages.length + ' pages to the Library</button></div>';
   $('import-preview').innerHTML = html;
 }
 function runImport() {
@@ -745,8 +776,142 @@ function runEnrich(btn) {
   step().catch(function(e) { btn.textContent = 'Stopped: ' + e.message; btn.disabled = false; });
 }
 
+// --- Reminder, Daybook links, deep links ----------------------------------------
+function toggleReminder() {
+  var c = $('reminder-card'), on = c.style.display === 'none'; c.style.display = on ? 'block' : 'none';
+  if (on) { $('reminder-text').textContent = 'Loading…'; api('/api/journal/reminder').then(function(r) { $('reminder-text').textContent = r.text; }); }
+}
+function sendReminder(btn) {
+  btn.disabled = true;
+  post('/api/journal/reminder', {}).then(function(r) { $('reminder-status').textContent = r.sent ? 'Sent to Telegram.' : 'Not sent: TELEGRAM_CHAT_ID is not set.'; })
+    .catch(function(e) { $('reminder-status').textContent = e.message; }).then(function() { btn.disabled = false; });
+}
+api('/api/journal/books').then(function(r) {
+  var ys = (r.years || []).filter(function(y) { return y.days >= 5; });
+  if (ys.length) $('book-links').innerHTML = '<select class="btn-ghost" onchange="if(this.value)location.href=\'/journal/book/\'+this.value" aria-label="Daybook volume"><option value="">Daybook</option>' +
+    ys.map(function(y) { return '<option value="' + y.year + '">' + y.year + ' (' + y.days + ')</option>'; }).join('') + '</select>';
+}).catch(function() {});
+(function() { var m = location.search.match(/[?&]entry=([^&]+)/); if (m) openEntry(decodeURIComponent(m[1])); })();
+
 loadTemplates();
 load();
+</script>
+</body>
+</html>`;
+
+// --- People page (/journal/people and /journal/people/:id) -------------------------
+const JOURNAL_CSS = PAGE.slice(PAGE.indexOf('<style>') + 7, PAGE.indexOf('</style>'));
+
+export function peoplePageHTML(): string {
+  return PEOPLE.replace('/*CSS*/', () => JOURNAL_CSS);
+}
+
+const PEOPLE = String.raw`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>People</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>/*CSS*/
+.pgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.person { cursor: pointer; }
+.person:hover { border-color: var(--accent); }
+.person .nm { font-family: var(--serif); font-size: 24px; line-height: 1.1; }
+.delta-up { color: var(--rose); } .delta-down { color: var(--thorn); }
+.form-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <h1><a href="/journal/people" style="color:inherit">People</a></h1>
+    <div class="top-actions">
+      <a class="btn-ghost" href="/journal">Journal</a>
+      <button class="btn-ghost" onclick="toggleTheme()" id="theme-btn" aria-label="Toggle theme">&#9790;</button>
+    </div>
+  </header>
+  <div id="view"></div>
+</div>
+<script>
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function $(id) { return document.getElementById(id); }
+function api(path, opts) { return fetch(path, opts).then(function(r) { return r.json().then(function(j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; }); }); }
+function post(path, body) { return api(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) }); }
+function fmtDate(d) { return d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '–'; }
+function delta(x) { if (x == null) return '<span class="muted">mood –</span>'; var s = (x > 0 ? '+' : x < 0 ? '−' : '±') + Math.abs(x).toFixed(1);
+  return '<span class="' + (x > 0.05 ? 'delta-up' : x < -0.05 ? 'delta-down' : 'muted') + '" title="Average mood on days with this person, compared with your overall average">mood ' + s + ' vs. average</span>'; }
+function applyTheme(t) { document.documentElement.dataset.theme = t; $('theme-btn').innerHTML = t === 'light' ? '&#9728;' : '&#9790;'; }
+function toggleTheme() { var t = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light'; try { localStorage.setItem('pkm-theme', t); } catch (e) {} applyTheme(t); }
+(function() { var t = 'dark'; try { t = localStorage.getItem('pkm-theme') || 'dark'; } catch (e) {} applyTheme(t); })();
+
+function route() {
+  var m = location.pathname.match(/^\/journal\/people\/([a-z0-9-]+)/);
+  if (m) showPerson(m[1]); else showList();
+}
+
+function showList() {
+  $('view').innerHTML = '<div class="skeleton">Loading…</div>';
+  Promise.all([api('/api/journal/people'), api('/api/journal/people/suggest').catch(function() { return { suggestions: [] }; })]).then(function(res) {
+    var list = res[0].people || [], sug = res[1].suggestions || [];
+    var html = '<section class="card" style="margin-bottom:14px"><h2>Add a person</h2><div class="sub">Aliases catch other names for the same person, such as initials or a nickname. Every day that mentions any of them links to the person.</div>' +
+      '<div class="form-row" style="margin-top:10px"><input type="text" id="p-name" placeholder="Name"><input type="text" id="p-aliases" placeholder="Aliases, comma separated" style="flex:1;min-width:180px">' +
+      '<select id="p-circle" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:7px"><option value="">Circle</option><option>Family</option><option>Friend</option><option>Work</option><option>Network</option><option>Other</option></select>' +
+      '<button class="btn" onclick="addPerson()">Add</button></div><div class="status" id="p-status"></div></section>';
+    if (sug.length) html += '<section class="card" style="margin-bottom:14px"><h2>Suggested</h2><div class="sub">Names that recur in your journal. Click to add.</div><div class="chips" style="margin-top:10px">' +
+      sug.map(function(s) { return '<button class="chip tpl" onclick="quickAdd(this, \'' + esc(s.name).replace(/'/g, '&#39;') + '\')">' + esc(s.name) + ' <span class="muted">' + s.days + '</span></button>'; }).join('') + '</div></section>';
+    html += list.length ? '<div class="pgrid">' + list.map(function(p) {
+      return '<div class="card person" onclick="go(\'' + p.id + '\')"><div class="nm">' + esc(p.name) + '</div>' +
+        '<div class="sub">' + esc([p.circle].concat(p.aliases || []).filter(Boolean).join(' · ')) + '</div>' +
+        '<div style="margin-top:10px" class="mono"><b>' + p.days + '</b> days · last ' + fmtDate(p.last) + '</div><div style="font-size:12px;margin-top:2px">' + delta(p.mood_delta) + '</div></div>';
+    }).join('') + '</div>' : '<div class="skeleton">No people yet. Add one above, or pick from the suggestions.</div>';
+    $('view').innerHTML = html;
+  }).catch(function(e) { $('view').innerHTML = '<div class="skeleton">' + esc(e.message) + '</div>'; });
+}
+
+function addPerson() {
+  var name = $('p-name').value.trim(); if (!name) return;
+  $('p-status').textContent = 'Linking days…';
+  post('/api/journal/people', { name: name, aliases: $('p-aliases').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean), circle: $('p-circle').value || null })
+    .then(function(r) { go(r.person.id); }).catch(function(e) { $('p-status').textContent = e.message; });
+}
+function quickAdd(btn, name) { btn.disabled = true; post('/api/journal/people', { name: name }).then(function() { showList(); }).catch(function(e) { btn.textContent = e.message; }); }
+function go(id) { history.pushState(null, '', '/journal/people/' + id); route(); }
+window.addEventListener('popstate', route);
+
+function showPerson(id) {
+  $('view').innerHTML = '<div class="skeleton">Loading…</div>';
+  Promise.all([api('/api/journal/people/' + id), api('/api/journal/people')]).then(function(res) {
+    var p = res[0].person, row = (res[1].people || []).filter(function(x) { return x.id === id; })[0] || {};
+    var themes = p.themes || [];
+    var tlist = function(kind) { return themes.filter(function(t) { return t.kind === kind; }).slice(0, 4).map(function(t) { return esc(t.theme) + ' <span class="muted">' + t.n + '</span>'; }).join(' · ') || '<span class="muted">none yet</span>'; };
+    $('view').innerHTML =
+      '<section class="card" style="margin-bottom:14px"><div class="card-head"><div><div class="sub">' + esc([p.circle].concat(p.aliases).filter(Boolean).join(' · ')) + '</div>' +
+      '<h2 style="font-size:40px">' + esc(p.name) + '</h2></div><button class="btn-ghost" onclick="removePerson(\'' + p.id + '\')">Remove</button></div>' +
+      '<div class="grid g4" style="margin:0"><div class="kpi"><div class="label">Days</div><div class="value mono">' + p.days.length + '</div></div>' +
+      '<div class="kpi"><div class="label">First</div><div class="value" style="font-size:22px">' + fmtDate(row.first) + '</div></div>' +
+      '<div class="kpi"><div class="label">Last</div><div class="value" style="font-size:22px">' + fmtDate(row.last) + '</div></div>' +
+      '<div class="kpi"><div class="label">Mood</div><div class="value" style="font-size:22px">' + delta(row.mood_delta) + '</div></div></div>' +
+      '<p style="margin-top:12px"><span class="rose-t">Roses:</span> ' + tlist('rose') + '<br><span class="thorn-t">Thorns:</span> ' + tlist('thorn') + '</p>' +
+      (p.seen_with.length ? '<p style="margin-top:6px"><span class="muted">Often with:</span> ' + p.seen_with.map(function(s) { return '<a href="#" onclick="go(\'' + s.id + '\');return false">' + esc(s.name) + '</a> <span class="muted">' + s.n + '</span>'; }).join(' · ') + '</p>' : '') +
+      '<div class="form-row" style="margin-top:12px"><input type="text" id="e-aliases" value="' + esc(p.aliases.join(', ')) + '" placeholder="Aliases, comma separated" style="flex:1;min-width:200px"><button class="btn-ghost" onclick="saveAliases(\'' + p.id + '\', \'' + esc(p.name).replace(/'/g, '&#39;') + '\')">Save aliases</button><span class="status" id="e-status"></span></div></section>' +
+      '<section class="card"><h2>Days</h2><ul class="list">' + (p.days.map(function(d) {
+        return '<li><a href="/journal?entry=' + encodeURIComponent(d.id) + '" style="color:inherit"><div class="date">' + fmtDate(d.entry_date) + (d.mood != null ? ' · mood ' + d.mood : '') + '</div><div>' + esc(d.excerpt || d.summary || '') + '</div></a></li>';
+      }).join('') || '<li class="faint">No days mention this person yet. Add an alias above.</li>') + '</ul></section>';
+  }).catch(function(e) { $('view').innerHTML = '<div class="skeleton">' + esc(e.message) + '</div>'; });
+}
+function saveAliases(id, name) {
+  $('e-status').textContent = 'Relinking…';
+  post('/api/journal/people', { id: id, name: name, aliases: $('e-aliases').value.split(',').map(function(s) { return s.trim(); }).filter(Boolean) })
+    .then(function() { showPerson(id); }).catch(function(e) { $('e-status').textContent = e.message; });
+}
+function removePerson(id) {
+  if (!confirm('Remove this person? Your journal entries stay unchanged.')) return;
+  api('/api/journal/people/' + id, { method: 'DELETE' }).then(function() { history.pushState(null, '', '/journal/people'); route(); });
+}
+route();
 </script>
 </body>
 </html>`;

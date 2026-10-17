@@ -6,6 +6,7 @@ import { lintWiki } from './lint';
 import { searchSimilar, findSimilarPages, rebuildIndex, indexPage } from './vectorize';
 import { getCachedPage, getCachedSearch, setCachedSearch, invalidatePage } from './kv-cache';
 import { handleJournalRoute, runJournalCron } from './journal-routes';
+import { handleTelegramJournal } from './journal-reminder';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -193,9 +194,12 @@ export default {
         const isURL = /^https?:\/\//.test(text);
         const isQuestion = /\?\s*$/.test(text);
         let replyText = '';
+        const journalReply = await handleTelegramJournal(env, message);
 
-        if (text === '/start') {
-          replyText = 'PKM Wiki Bot ready.\n\nSend me:\n- A URL to ingest\n- A thought to capture\n- A question? to query your wiki\n- /briefing for morning briefing\n- /stats for wiki stats';
+        if (journalReply !== null) {
+          replyText = journalReply;
+        } else if (text === '/start') {
+          replyText = 'PKM Wiki Bot ready.\n\nReply to the evening check-in, or send /j <your day>, to journal. /onthisday shows past years.\n\nSend me:\n- A URL to ingest\n- A thought to capture\n- A question? to query your wiki\n- /briefing for morning briefing\n- /stats for wiki stats';
         } else if (text === '/briefing') {
           const stats = await env.DB.prepare('SELECT COUNT(*) as count FROM pages').first();
           const recent = await env.DB.prepare('SELECT title FROM pages ORDER BY updated_at DESC LIMIT 3').all();
@@ -282,7 +286,7 @@ export default {
 
         if (token !== validToken) {
           // Show login page for GET /, redirect API calls
-          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal')) {
+          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal' || path.startsWith('/journal/'))) {
             return new Response(loginPageHTML(), {
               status: 401,
               headers: { 'Content-Type': 'text/html' },
@@ -1593,7 +1597,7 @@ export default {
       }
 
       // Living Journal — /journal and /api/journal/*
-      if (path === '/journal' || path === '/journal/' || path.startsWith('/api/journal')) {
+      if (path === '/journal' || path.startsWith('/journal/') || path.startsWith('/api/journal')) {
         const journalResponse = await handleJournalRoute(request, env, url);
         if (journalResponse) return journalResponse;
       }

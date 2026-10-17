@@ -35,14 +35,14 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
     ['rose_theme', /^rose[ _]theme$/],
     ['thorn_theme', /^thorn[ _]theme$/],
     ['thorn_cause', /^thorn[ _]cause$/],
-    ['rose', /^(rose|rose of the day|best moment)$/],
-    ['thorn', /^(thorn|thorn of the day|worst moment|hardest moment)$/],
+    ['rose', /^(rose|roses?|rose of the day|rose for the day|best moment)$/],
+    ['thorn', /^(thorn|thorns?|thorn of the day|thorn for the day|worst moment|hardest moment)$/],
     ['bud', /^(bud|looking forward to|something to look forward to)$/],
-    ['key_wins', /^(key wins|wins|big wins|win|wins of the day)$/],
-    ['lesson', /^(lesson|lessons|lesson learned|lessons learned|learned|what i learned)$/],
-    ['next_action', /^(next action|next actions|goals for tomorrow|tomorrow|todo tomorrow|action for tomorrow)$/],
+    ['key_wins', /^(key wins|wins|big wins|biggest wins|win|wins of the day|wins for the day|win for today|wins for today|win of the day)$/],
+    ['lesson', /^(lesson|lessons|lesson learned|lessons learned|learned|what i learned|key learning|key learning today|key learnings|lesson of the day)$/],
+    ['next_action', /^(next action|next actions|(\d+ )?goals for tomorrow|tomorrow|todo tomorrow|actions? for tomorrow)$/],
     ['summary', /^(summary|one[- ]line summary)$/],
-    ['notable', /^(notable|quote|memorable)$/],
+    ['notable', /^(notable|quote|memorable|scene of the day)$/],
     ['tickers', /^tickers?$/],
     ['mood', /^(mood|mood \(inferred\)|inferred mood)$/],
     ['mood_confidence', /^mood confidence$/],
@@ -58,8 +58,12 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
 
   const pad = (n: number) => (n < 10 ? '0' : '') + n;
   const clean = (s: string) => s
-    .replace(/\[\[([^\]]+)\]\]/g, '$1')       // Roam page links
-    .replace(/#\[\[([^\]]+)\]\]/g, '$1')
+    .replace(/\{\{\[\[(TODO|DONE)\]\]\}\}/g, '{{$1}}') // Roam checkboxes, kept as markers
+    .replace(/\{\{\[\[[^\]]*\]\][^}]*\}\}/g, '')     // other Roam widgets such as {{[[slider]]}}
+    .replace(/\(\([\w-]{6,}\)\)/g, '')                // block references
+    .replace(/#?\[\[\[\[([^\]]+)\]\]\s*\]\]/g, '$1')   // nested links: [[[[Day in Review]] ]]
+    .replace(/#\[\[([^\]]+)\]\]/g, '$1')               // tags: #[[day score]]
+    .replace(/\[\[([^\]]+)\]\]/g, '$1')                // page links
     .replace(/\*\*|__/g, '')
     .replace(/^\s*[-*+]\s+/, '')
     .replace(/^>\s*/, '')
@@ -88,8 +92,9 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
   }
 
   function labelOf(raw: string): string | null {
-    const l = clean(raw).replace(/[:：]+$/, '').toLowerCase().trim();
-    for (const [field, re] of LABELS) if (re.test(l)) return field;
+    const full = clean(raw).replace(/^#/, '').replace(/[:：]+$/, '').toLowerCase().trim();
+    const head = full.split(/\s+\|\s+|\s+goals\b(?!.*tomorrow)/)[0].replace(/[:：]+$/, '').trim();
+    for (const l of [full, head]) for (const [field, re] of LABELS) if (re.test(l)) return field;
     return null;
   }
 
@@ -101,7 +106,8 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
   function extractFields(text: string): Record<string, unknown> {
     const out: Record<string, string[]> = {};
     const add = (field: string, value: string) => {
-      const v = clean(value);
+      if (/\{\{\[\[DONE\]\]\}\}|\{\{DONE\}\}/.test(value)) return; // finished items are not open actions
+      const v = clean(value).replace(/^\{\{TODO\}\}\s*/, '').trim();
       if (!v || /^[-–—]$/.test(v) || /^(none|n\/a|null)$/i.test(v)) return;
       (out[field] = out[field] || []).push(v);
     };
@@ -145,7 +151,7 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
       }
       // Bare label line ("- Rose") with nested children
       const bare = labelOf(line);
-      if (bare && /^\s*[-*+]?\s*\**[A-Za-z]/.test(line)) {
+      if (bare && /^[A-Za-z#]/.test(body)) {
         const base = indentOf(line);
         let j = i + 1;
         for (; j < lines.length && lines[j].trim() && indentOf(lines[j]) > base; j++) add(bare, lines[j]);
@@ -194,6 +200,14 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
     const base = file.name.split('/').pop() || file.name;
     const fileDate = parseDate(base);
     if (fileDate) { addEntry(fileDate, base.replace(/\.md$/i, ''), text.replace(/^#\s+.*\n/, '')); continue; }
+
+    // Roam template pages: "Investment Memo Template.md", "[[Template]]/day.md", "roam/templates/…"
+    if (/template/i.test(file.name.replace(/\[|\]/g, '')) && text.trim()) {
+      const stem = clean(base.replace(/\.(md|markdown|txt)$/i, ''));
+      const name = stem.replace(/\s*templates?\s*/i, ' ').trim() || stem;
+      templates.push({ name: name.charAt(0).toUpperCase() + name.slice(1), body: text.trim() });
+      continue;
+    }
 
     // Split one file into sections at date headings. A day ends at the next heading
     // of the same or a higher level.

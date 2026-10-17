@@ -25,3 +25,32 @@ assert.equal(P([{ name: 'a.md', text: `## Strategy May 2021\nx\n## Q3 Plan\ny` }
 r = P([{ name: 'Daily Journal/Tue, Jul 20, 2021 0123456789abcdef0123456789abcdef.md', text: `# Tue, Jul 20, 2021\n\nLesson: Sleep first\nNext Action: Golf lesson\n\n## Day in Review\n- x` }]);
 assert.equal(r.entries[0].date, '2021-07-20'); assert.equal(r.entries[0].lesson, 'Sleep first'); assert.equal(r.entries[0].next_action, 'Golf lesson');
 console.log('all parser tests passed');
+
+// 6. Real Roam layout: tagged labels with nested bullets, TODO/DONE, slider, block refs
+r = P([{ name: 'Roam-Export/March 20th, 2021.md', text: [
+  '- #[[Day in Review]]',
+  '    - Up at 7am. ((ROs2yvW2Z))',
+  '    - [[rose of the day]]',
+  '        - Making friends through kids',
+  '    - [[thorn of the day]]',
+  '        - No real thorn',
+  '    - [[wins for the day]]',
+  '        - fast went well',
+  '    - [[key learning today]]',
+  '        - slow down',
+  '    - #[[day score]] {{[[slider]]}}',
+  '    - **Goals for Tomorrow** [[Goals]] | [[TODO]] [[March 21st, 2021]]',
+  '        -  {{[[DONE]]}}  day two of the fast',
+  '        - {{[[TODO]]}} Write the pitch [[March 22nd, 2021]]',
+].join('\n') }]);
+e = r.entries[0];
+assert.equal(e.date, '2021-03-20'); assert.equal(e.rose, 'Making friends through kids'); assert.equal(e.thorn, 'No real thorn');
+assert.equal(e.key_wins, 'fast went well'); assert.equal(e.lesson, 'slow down'); assert.equal(e.day_score, undefined);
+assert.equal(e.next_action, 'Write the pitch March 22nd, 2021');
+// 7. Roam day template page is not a day, and "[[Template]]/day.md" is a template
+r = P([{ name: 'Roam-Export/[[Template]]/day.md', text: '- [[[[Day in Review]] ]]\n- [[rose of the day]]\n- 2 goals for tomorrow\n    - {{[[TODO]]}}' }]);
+assert.equal(r.entries.length, 0);
+assert.deepEqual(r.templates.map(t => t.name), ['Day']);
+r = P([{ name: 'Investment Memo Template.md', text: '- Thesis\n- Risks' }, { name: 'Template.md', text: '- 5 Whys' }]);
+assert.deepEqual(r.templates.map(t => t.name), ['Investment Memo', 'Template']);
+console.log('roam layout tests passed');

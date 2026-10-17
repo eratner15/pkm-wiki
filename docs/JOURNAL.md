@@ -117,6 +117,15 @@ Each volume has a cover, a year-at-a-glance page (days, average mood, best and h
 
 Every quote is checked against the notes word for word (case, spacing, markup and curly quotes are ignored; "..." joins pieces that must appear in order). A quote that does not match is dropped, and the toolbar shows how many were dropped. The result is stored in `journal_state` under the key `keepsake`.
 
+## Reading
+
+`/journal/reading` is the reading library: one page per book with its highlights, your own notes page (when the wiki has a page with the same title), and the journal days that mention the book.
+
+1. Open `/journal/reading` and press **Import highlights from the wiki**. It loads the Readwise pages that came in from Roam (one R2 read per page, in steps of 40). Running it again changes nothing.
+2. To keep it current, create a Readwise access token at readwise.io/access_token and run `npx wrangler secret put READWISE_TOKEN`. The hourly cron then pulls new and changed highlights from the Readwise export API (`updatedAfter` the last sync, deleted highlights removed). **Sync Readwise now** runs it on demand.
+
+A highlight's id is a hash of its book and its text, so a highlight from the wiki and the same one from Readwise are stored once. A journal day counts as a mention when it contains the book title (or the part before a colon) as a phrase; single-word titles shorter than eight letters are skipped to avoid false matches. The nightly reminder ends with a highlight of the day from the library.
+
 ## Nightly reminder
 
 Every evening at 01:07 UTC (9:07 pm New York in summer, 8:07 pm in winter), the existing Telegram bot sends:

@@ -705,7 +705,16 @@ export async function captureEntry(env: Env, input: { text: string; date?: strin
     body,
   };
   await upsertStatement(env, entry, true).run();
-  return { entry: await getEntry(env, id), missing: data.missing, model, cost_usd };
+
+  // Living Journal rule: a thorn that repeats a known cause gets a Thinking Template offer.
+  let suggest_template: string | null = null;
+  if (data.thorn_cause) {
+    const repeat = await env.DB.prepare(
+      `SELECT COUNT(*) AS n FROM journal_entries WHERE lower(trim(thorn_cause)) = lower(trim(?)) AND id != ?`
+    ).bind(data.thorn_cause, id).first();
+    if (((repeat?.n as number) || 0) >= 2) suggest_template = data.thorn_theme === 'Mindset' ? 'Pain Button' : 'Issue Log';
+  }
+  return { entry: await getEntry(env, id), missing: data.missing, suggest_template, model, cost_usd };
 }
 
 // --- Insights ----------------------------------------------------------------
@@ -830,6 +839,125 @@ export async function generateInsight(env: Env, period: InsightPeriod, opts: { f
   ).bind(period, key, JSON.stringify(data), model, usage.input_tokens, usage.output_tokens, cost_usd, latest.u).run();
 
   return { period, period_key: key, content: data, model, cost_usd, created_at: new Date().toISOString(), cached: false };
+}
+
+// --- Templates -----------------------------------------------------------------
+
+/** Daily Roam template plus the Thinking Templates (Cortex Futura and Dalio's Principles). */
+export const BUILTIN_TEMPLATES: { name: string; body: string; hint: string }[] = [
+  { name: 'Daily', hint: 'Rose, Thorn, Bud and the day in review',
+    body: 'Rose:: \nThorn:: \nBud:: \nKey Wins:: \nLesson:: \n\n## Day in Review\n- \n\n### Goals for tomorrow\n- [ ] ' },
+  { name: 'Issue Log', hint: 'Something went wrong; find the root cause',
+    body: '## Issue Log\n1. What suboptimality did you experience?\n2. What is the mental map of how it was supposed to work?\n3. What should have happened? What did happen?\n4. What, if anything, broke? Was it the design or how the people in it behaved?\n5. Proximate causes: what was not done?\n6. Root causes (ask "why" five times; a root cause is a reason, not an action):\n7. Is this consistent with a prior pattern? (Yes / No / Unsure)\n8. What is the long-term fix? Does a machine design need to change?\n' },
+  { name: 'Choice', hint: 'You face a decision',
+    body: '## Choice\n- Constraints:\n- Options:\n- Decision:\n- Review on (date) and outcome:\n' },
+  { name: 'Pain Button', hint: 'A strong negative emotion hit',
+    body: '## Pain Button\n- Time:\n- Emotion:\n- Context:\n- Proximate cause:\n- Reflection:\n- Reflect on this again on (date):\n' },
+  { name: 'Difference Engine', hint: 'You set a goal or feel stuck',
+    body: '## Difference Engine\n- Current situation:\n- Future situation:\n- Differences between them:\n- Most serious difference:\n- Steps to reduce the difference:\n' },
+  { name: 'I Want', hint: 'You want something and something blocks you',
+    body: '## I Want\n- I want…\n- Impediment:\n- Remedy:\n- Action items:\n' },
+  { name: 'Disagreement Check', hint: 'You disagree with someone, or with the market',
+    body: '## Disagreement Check\n- Missing information?\n- Wrong information?\n- Reasoning errors? Non sequitur? Inconsistency?\n- Incomplete analysis?\n' },
+];
+
+export async function listTemplates(env: Env) {
+  await ensureJournalSchema(env);
+  let custom: { name: string; body: string }[] = [];
+  try { custom = JSON.parse((await getState(env, 'templates')) || '[]'); } catch {}
+  return [...BUILTIN_TEMPLATES.map(t => ({ ...t, builtin: true })), ...custom.map(t => ({ ...t, hint: 'Imported', builtin: false }))];
+}
+
+/** Save imported templates. Same-name templates are replaced; built-ins cannot be overwritten. */
+export async function saveTemplates(env: Env, incoming: { name: string; body: string }[]) {
+  await ensureJournalSchema(env);
+  let custom: { name: string; body: string }[] = [];
+  try { custom = JSON.parse((await getState(env, 'templates')) || '[]'); } catch {}
+  const builtin = new Set(BUILTIN_TEMPLATES.map(t => t.name.toLowerCase()));
+  for (const t of incoming) {
+    const name = String(t.name || '').trim().slice(0, 60);
+    const body = String(t.body || '').slice(0, 5000);
+    if (!name || !body || builtin.has(name.toLowerCase())) continue;
+    custom = custom.filter(c => c.name.toLowerCase() !== name.toLowerCase()).concat([{ name, body }]);
+  }
+  await setState(env, 'templates', JSON.stringify(custom.slice(-30)));
+  return listTemplates(env);
+}
+
+// --- Enrich imported days -----------------------------------------------------------
+
+const ENRICH_BATCH = 8;
+const NEEDS_ENRICH = `summary IS NULL AND length(coalesce(body, '') || coalesce(rose, '') || coalesce(thorn, '')) > 40`;
+
+const EnrichSchema = z.object({
+  days: z.array(z.object({
+    id: z.string(),
+    summary: z.string().describe('One-line summary of the day, third person'),
+    rose_theme: Theme,
+    thorn_theme: Theme,
+    thorn_cause: z.string().nullable().describe('Short reusable root cause of the thorn, 2-6 words'),
+    mood: z.number().int().min(1).max(10),
+    mood_confidence: z.enum(['High', 'Medium', 'Low']),
+    energy: z.enum(['High', 'Medium', 'Low']).nullable(),
+    tags: z.array(z.enum(THEMES)),
+    notable: z.string().nullable(),
+    entry_type: z.enum(['Daily', 'Weekly Preview', 'Work Notes', 'Other']),
+  })),
+});
+
+/** How many imported days still lack a summary, and what enriching them would cost. */
+export async function enrichEstimate(env: Env) {
+  await ensureJournalSchema(env);
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS n, SUM(min(length(coalesce(body, '')), 3000) + length(coalesce(rose, '') || coalesce(thorn, ''))) AS chars
+     FROM journal_entries WHERE ${NEEDS_ENRICH}`
+  ).first();
+  const n = (row?.n as number) || 0;
+  const model = env.JOURNAL_MODEL || DEFAULT_MODEL;
+  const [pin, pout] = PRICES[model] || PRICES[DEFAULT_MODEL];
+  const calls = Math.ceil(n / ENRICH_BATCH);
+  const inTokens = ((row?.chars as number) || 0) / 4 + calls * 900;
+  const outTokens = n * 220 + calls * 600; // fields per day plus thinking
+  return { remaining: n, model, est_cost_usd: Math.round(((inTokens * pin + outTokens * pout) / 1e6) * 100) / 100 };
+}
+
+/** Fill summary, mood, themes and thorn cause for imported days. Never overwrites a filled field. */
+export async function enrichEntries(env: Env) {
+  await ensureJournalSchema(env);
+  const rows = ((await env.DB.prepare(
+    `SELECT id, entry_date, rose, thorn, bud, key_wins, lesson, body FROM journal_entries
+     WHERE ${NEEDS_ENRICH} ORDER BY entry_date LIMIT ?`
+  ).bind(ENRICH_BATCH).all()).results || []) as any[];
+  if (!rows.length) return { enriched: 0, remaining: 0, cost_usd: 0 };
+
+  const user = rows.map(r => [
+    `### id=${r.id} date=${r.entry_date}`,
+    r.rose ? `Rose: ${r.rose}` : '', r.thorn ? `Thorn: ${r.thorn}` : '', r.bud ? `Bud: ${r.bud}` : '',
+    r.key_wins ? `Wins: ${r.key_wins}` : '', r.lesson ? `Lesson: ${r.lesson}` : '',
+    r.body ? String(r.body).slice(0, 3000) : '',
+  ].filter(Boolean).join('\n')).join('\n\n');
+
+  const { data, cost_usd } = await askClaude(env, 'enrich', `${CAPTURE_SYSTEM}
+You receive several past journal days. Return one item per day, with the same id.
+Infer only summary, themes, thorn cause, mood, energy, tags, notable and entry type. Keep the person's words where you quote.`,
+    user, EnrichSchema, 'low');
+
+  const byId = new Map(data.days.map(d => [d.id, d]));
+  const stmts = rows.map(r => {
+    const d = byId.get(r.id);
+    if (!d) return env.DB.prepare(`UPDATE journal_entries SET summary = '' WHERE id = ?`).bind(r.id); // do not retry forever
+    return env.DB.prepare(
+      `UPDATE journal_entries SET summary = ?, rose_theme = COALESCE(rose_theme, ?), thorn_theme = COALESCE(thorn_theme, ?),
+         thorn_cause = COALESCE(thorn_cause, ?), mood = COALESCE(mood, ?), mood_confidence = COALESCE(mood_confidence, ?),
+         energy = COALESCE(energy, ?), notable = COALESCE(notable, ?), entry_type = COALESCE(entry_type, ?),
+         tags = CASE WHEN tags IS NULL OR tags = '[]' THEN ? ELSE tags END, updated_at = datetime('now')
+       WHERE id = ?`
+    ).bind(d.summary, d.rose_theme, d.thorn_theme, d.thorn_cause, d.mood, d.mood_confidence, d.energy, d.notable,
+      d.entry_type, JSON.stringify(d.tags), r.id);
+  });
+  await env.DB.batch(stmts);
+  const left = await env.DB.prepare(`SELECT COUNT(*) AS n FROM journal_entries WHERE ${NEEDS_ENRICH}`).first();
+  return { enriched: rows.length, remaining: (left?.n as number) || 0, cost_usd };
 }
 
 // --- Ask your journal -----------------------------------------------------------

@@ -1,8 +1,12 @@
 // Living Journal dashboard — served at /journal. Client code is plain JS inside String.raw,
 // so it must not contain backticks or "${".
+import { parseJournalMarkdown } from './journal-parse';
+
+// The markdown parser runs in the browser. The shim covers esbuild's keep-names helper.
+const PARSER_JS = 'var __name = function (f) { return f; };\n' + parseJournalMarkdown.toString();
 
 export function journalPageHTML(): string {
-  return PAGE;
+  return PAGE.replace('/*JOURNAL_PARSER*/', () => PARSER_JS);
 }
 
 const PAGE = String.raw`<!DOCTYPE html>
@@ -118,6 +122,12 @@ input[type=text], input[type=date] { background: var(--bg); color: var(--text); 
 .setup ol { padding-left: 20px; } .setup li { margin: 6px 0; }
 .setup code { font-family: var(--mono); font-size: 12px; background: var(--raised); padding: 1px 5px; border-radius: 4px; }
 .skeleton { color: var(--faint); padding: 20px 0; text-align: center; }
+.drop { display: block; border: 1px dashed var(--border); border-radius: 8px; padding: 26px 16px; text-align: center; color: var(--dim); cursor: pointer; }
+.drop.over, .drop:hover { border-color: var(--accent); color: var(--text); }
+table.prev { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 10px; }
+table.prev td, table.prev th { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.prev th { color: var(--dim); font-weight: 600; }
+.tpl { height: auto; padding: 4px 10px; font-family: var(--sans); }
 </style>
 </head>
 <body>
@@ -126,7 +136,8 @@ input[type=text], input[type=date] { background: var(--bg); color: var(--text); 
     <h1>Living <span>Journal</span></h1>
     <div class="top-actions">
       <span class="status" id="sync-status"></span>
-      <button class="btn-ghost" id="sync-btn" onclick="syncNow()">Sync Notion</button>
+      <button class="btn-ghost" onclick="toggleImport(true)">Import</button>
+      <button class="btn-ghost" id="sync-btn" onclick="syncNow()" style="display:none">Sync Notion</button>
       <a class="btn-ghost" href="/">Wiki</a>
       <button class="btn-ghost" onclick="toggleTheme()" id="theme-btn" aria-label="Toggle theme">&#9790;</button>
     </div>
@@ -134,12 +145,25 @@ input[type=text], input[type=date] { background: var(--bg); color: var(--text); 
 
   <div id="setup"></div>
 
+  <section class="card" id="import-card" style="display:none;margin-bottom:14px;border-color:var(--accent)">
+    <div class="card-head">
+      <div><h2>Import your journal</h2><div class="sub">Markdown files or a Roam export .zip. Your file is read in this browser and sent only to your own wiki. Importing the same file again updates the same days.</div></div>
+      <button class="btn-ghost" onclick="toggleImport(false)">Close</button>
+    </div>
+    <label class="drop" id="drop">
+      <input type="file" id="import-file" multiple accept=".md,.markdown,.txt,.zip" style="display:none" onchange="readFiles(this.files); this.value = ''">
+      <b>Drop files here</b> or click to choose · .md, .txt or .zip
+    </label>
+    <div id="import-preview"></div>
+  </section>
+
   <!-- Capture -->
   <section class="card" style="margin-bottom:14px">
     <div class="card-head">
       <div><h2>Tell me about today</h2><div class="sub">Dump your day in any order. Claude files the Rose, Thorn, Bud, wins and people. Missing parts get asked once, never invented.</div></div>
       <input type="date" id="cap-date">
     </div>
+    <div class="chips" id="tpl-chips" style="margin-bottom:8px"></div>
     <textarea id="cap-text" placeholder="Morning: … Rose: … Thorn: … Looking forward to …"></textarea>
     <div class="cap-row">
       <span class="muted" style="font-size:12px">Day score</span>
@@ -301,6 +325,9 @@ function capture() {
         html += '<div class="ask-missing">Not in today’s entry: <b>' + r.missing.map(function(m) { return m.replace('_', ' '); }).join(', ') +
           '</b>. Add a line above and file again; it appends to the same day.</div>';
       }
+      if (r.suggest_template) {
+        html += '<div class="ask-missing">This thorn repeats a cause you have logged before. <button class="btn-ghost" style="margin-left:6px" onclick="useTemplate(\'' + esc(r.suggest_template) + '\')">Run ' + esc(r.suggest_template) + '</button></div>';
+      }
       $('cap-result').innerHTML = html; $('cap-result').style.display = 'block';
       load();
     })
@@ -330,7 +357,8 @@ function load() {
 
 function render() {
   var t = S.totals;
-  $('setup').innerHTML = (!t.entries || !S.notion_connected) ? setupHTML(t.entries) : '';
+  $('setup').innerHTML = !t.entries ? setupHTML() : '';
+  $('sync-btn').style.display = S.notion_connected ? '' : 'none';
   var m30 = S.last30 || {};
   var kp = [
     ['Entries', t.entries || 0, t.first ? 'since ' + fmtDate(t.first) : 'none yet'],
@@ -397,13 +425,14 @@ function searchSoon() {
   }, 250);
 }
 
-function setupHTML(n) {
-  return '<section class="card setup" style="margin-bottom:14px;border-color:var(--accent)"><h2>' + (n ? 'Connect Notion for automatic sync' : 'Bring your journal in') + '</h2>' +
-    '<div class="sub" style="margin-bottom:10px">One token replaces the per-page access prompts. Do this once.</div><ol>' +
-    '<li>Open <a href="https://www.notion.so/profile/integrations" target="_blank" rel="noopener">notion.so/profile/integrations</a> and create an internal integration named <code>PKM Journal</code> (read content only).</li>' +
-    '<li>In Notion, open <b>Living Journal</b> → <b>…</b> → <b>Connections</b> → add <code>PKM Journal</code>. Every database under it is shared at once.</li>' +
-    '<li>Save the token as a Worker secret: <code>npx wrangler secret put NOTION_TOKEN</code>.</li>' +
-    '<li>Click <b>Sync Notion</b> above. Entries arrive at once; page bodies fill in over a few runs.</li></ol></section>';
+function setupHTML() {
+  return '<section class="card setup" style="margin-bottom:14px;border-color:var(--accent)"><h2>Bring your journal in</h2>' +
+    '<div class="sub" style="margin-bottom:10px">No Notion needed. Use the markdown you exported from Roam or from your other chat.</div><ol>' +
+    '<li>Click <b>Import</b> and drop the markdown file, or the Roam export .zip.</li>' +
+    '<li>Check the preview: number of days, date range, and the fields that were found.</li>' +
+    '<li>Click <b>Import</b>. Templates in the file are saved too.</li>' +
+    '<li>If some days have notes but no summary or mood, you can let Claude fill them in. It shows the cost first.</li></ol>' +
+    '<button class="btn" style="margin-top:10px" onclick="toggleImport(true)">Import</button></section>';
 }
 
 // --- Charts ----------------------------------------------------------------
@@ -609,6 +638,114 @@ seg('theme-range', 'data-r', function(v) { themeRange = v; renderThemes(); });
 seg('insight-range', 'data-p', function(v) { insightPeriod = v; loadInsight(); });
 var resizeTimer; window.addEventListener('resize', function() { clearTimeout(resizeTimer); resizeTimer = setTimeout(function() { if (S) { renderTrend(); renderWeekday(); } }, 150); });
 
+// --- Templates ---------------------------------------------------------------
+var TEMPLATES = [];
+function loadTemplates() {
+  api('/api/journal/templates').then(function(r) {
+    TEMPLATES = r.templates || [];
+    $('tpl-chips').innerHTML = '<span class="muted" style="font-size:12px;align-self:center;margin-right:4px">Templates</span>' +
+      TEMPLATES.map(function(t) { return '<button class="chip tpl" title="' + esc(t.hint || '') + '" onclick="useTemplate(\'' + esc(t.name).replace(/'/g, '&#39;') + '\')">' + esc(t.name) + '</button>'; }).join('');
+  }).catch(function() {});
+}
+function useTemplate(name) {
+  var t = TEMPLATES.filter(function(x) { return x.name === name; })[0]; if (!t) return;
+  var ta = $('cap-text'); ta.value = (ta.value.trim() ? ta.value.replace(/\s+$/, '') + '\n\n' : '') + t.body; ta.focus();
+  ta.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  try { localStorage.setItem('journal-draft', ta.value); } catch (e) {}
+}
+
+// --- Import ------------------------------------------------------------------
+/*JOURNAL_PARSER*/
+var PARSED = null;
+function toggleImport(on) { $('import-card').style.display = on ? 'block' : 'none'; if (on) $('import-card').scrollIntoView({ behavior: 'smooth' }); }
+(function() {
+  var d = $('drop');
+  ['dragenter', 'dragover'].forEach(function(ev) { d.addEventListener(ev, function(e) { e.preventDefault(); d.classList.add('over'); }); });
+  ['dragleave', 'drop'].forEach(function(ev) { d.addEventListener(ev, function(e) { e.preventDefault(); d.classList.remove('over'); }); });
+  d.addEventListener('drop', function(e) { readFiles(e.dataTransfer.files); });
+})();
+function loadScript(src) { return new Promise(function(ok, bad) { var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = bad; document.head.appendChild(s); }); }
+function readFiles(list) {
+  var files = Array.prototype.slice.call(list || []); if (!files.length) return;
+  $('import-preview').innerHTML = '<div class="skeleton">Reading ' + files.length + ' file(s)…</div>';
+  var needZip = files.some(function(f) { return /\.zip$/i.test(f.name); });
+  (needZip && !window.fflate ? loadScript('https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js') : Promise.resolve()).then(function() {
+    return Promise.all(files.map(function(f) {
+      if (/\.zip$/i.test(f.name)) {
+        return f.arrayBuffer().then(function(buf) {
+          var out = fflate.unzipSync(new Uint8Array(buf)); var dec = new TextDecoder();
+          return Object.keys(out).filter(function(n) { return /\.(md|markdown|txt)$/i.test(n) && n.indexOf('__MACOSX') < 0; })
+            .map(function(n) { return { name: n, text: dec.decode(out[n]) }; });
+        });
+      }
+      return f.text().then(function(t) { return [{ name: f.name, text: t }]; });
+    }));
+  }).then(function(groups) {
+    PARSED = parseJournalMarkdown([].concat.apply([], groups));
+    showPreview();
+  }).catch(function(e) { $('import-preview').innerHTML = '<div class="skeleton">Could not read the files: ' + esc(e.message) + '</div>'; });
+}
+function showPreview() {
+  var p = PARSED, n = p.entries.length;
+  var count = function(f) { return p.entries.filter(function(e) { return e[f] != null && e[f] !== '' && !(Array.isArray(e[f]) && !e[f].length); }).length; };
+  if (!n) {
+    $('import-preview').innerHTML = '<div class="skeleton">No dated days found. Days need a date as the file name or as a heading, for example "## Tue, Jul 20, 2021" or "July 20th, 2021".' +
+      (p.undated.length ? '<br>Sections without a date: ' + p.undated.slice(0, 8).map(function(u) { return esc(u.title); }).join(', ') : '') + '</div>';
+    return;
+  }
+  var fields = [['Rose', 'rose'], ['Thorn', 'thorn'], ['Bud', 'bud'], ['Wins', 'key_wins'], ['Lesson', 'lesson'], ['Summary', 'summary'], ['Mood', 'mood'], ['Day score', 'day_score'], ['Tags', 'tags'], ['People', 'people']];
+  var html = '<p style="margin-top:14px"><b class="mono">' + n + '</b> days from <b>' + esc(p.entries[0].date) + '</b> to <b>' + esc(p.entries[n - 1].date) + '</b>' +
+    (p.templates.length ? ' · <b class="mono">' + p.templates.length + '</b> template' + (p.templates.length > 1 ? 's' : '') : '') +
+    (p.undated.length ? ' · ' + p.undated.length + ' undated sections skipped' : '') + '</p>' +
+    '<div class="legend" style="margin-top:4px">' + fields.map(function(f) { return '<span>' + f[0] + ' <b class="mono">' + count(f[1]) + '</b></span>'; }).join('') + '</div>' +
+    '<table class="prev"><tr><th>Date</th><th>Rose</th><th>Thorn</th><th>Notes</th></tr>' +
+    p.entries.slice(-5).reverse().map(function(e) {
+      return '<tr><td class="mono">' + esc(e.date) + '</td><td>' + esc(e.rose || '') + '</td><td>' + esc(e.thorn || '') + '</td><td class="muted">' + esc(String(e.body || '').slice(0, 90)) + '</td></tr>';
+    }).join('') + '</table>' +
+    '<div class="cap-row"><span class="status" id="import-status"></span><span style="flex:1"></span><button class="btn" id="import-btn" onclick="runImport()">Import ' + n + ' days</button></div>';
+  $('import-preview').innerHTML = html;
+}
+function runImport() {
+  var p = PARSED, i = 0, done = 0; $('import-btn').disabled = true;
+  function next() {
+    if (i >= p.entries.length) {
+      return (p.templates.length ? post('/api/journal/templates', { templates: p.templates }) : Promise.resolve()).then(function() {
+        $('import-status').textContent = 'Imported ' + done + ' days' + (p.templates.length ? ' and ' + p.templates.length + ' template' + (p.templates.length > 1 ? 's' : '') : '') + '.';
+        loadTemplates(); load(); checkEnrich();
+      });
+    }
+    var batch = p.entries.slice(i, i + 200); i += 200;
+    $('import-status').textContent = 'Importing ' + Math.min(i, p.entries.length) + ' of ' + p.entries.length + '…';
+    return post('/api/journal/import', { entries: batch }).then(function(r) { done += r.imported; return next(); });
+  }
+  next().catch(function(e) { $('import-status').textContent = 'Import stopped: ' + e.message; $('import-btn').disabled = false; });
+}
+
+// --- Enrich ------------------------------------------------------------------
+function checkEnrich() {
+  api('/api/journal/enrich').then(function(r) {
+    if (!r.remaining) return;
+    var box = document.createElement('div'); box.className = 'ask-missing'; box.id = 'enrich-box';
+    box.innerHTML = '<b class="mono">' + r.remaining + '</b> days have notes but no summary or mood. Claude can fill in summary, mood, themes and thorn cause. It never changes what you wrote. ' +
+      'Estimated cost: <b>' + money(r.est_cost_usd) + '</b> on ' + esc(r.model) + '. <button class="btn" style="margin-left:6px" onclick="runEnrich(this)">Fill in with Claude</button>';
+    var old = $('enrich-box'); if (old) old.remove();
+    $('import-preview').appendChild(box);
+  }).catch(function() {});
+}
+function runEnrich(btn) {
+  btn.disabled = true; var spent = 0, done = 0;
+  function step() {
+    return post('/api/journal/enrich', {}).then(function(r) {
+      spent += r.cost_usd || 0; done += r.enriched;
+      btn.textContent = done + ' done · ' + r.remaining + ' left · ' + money(spent);
+      if (r.remaining && r.enriched) return step();
+      btn.textContent = 'Done: ' + done + ' days · ' + money(spent); load();
+    });
+  }
+  step().catch(function(e) { btn.textContent = 'Stopped: ' + e.message; btn.disabled = false; });
+}
+
+loadTemplates();
 load();
 </script>
 </body>

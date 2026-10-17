@@ -1,7 +1,7 @@
 import { Env } from './types';
 import {
-  askJournal, captureEntry, generateInsight, getEntry, getInsight, importEntries, InsightPeriod,
-  journalStats, listEntries, syncJournalFromNotion,
+  askJournal, captureEntry, enrichEntries, enrichEstimate, generateInsight, getEntry, getInsight, importEntries,
+  InsightPeriod, journalStats, listEntries, listTemplates, saveTemplates, syncJournalFromNotion,
 } from './journal';
 import { journalPageHTML } from './journal-page';
 
@@ -80,6 +80,20 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
         if (!PERIODS.includes(period)) return json({ error: 'bad period' }, 400);
         return json(await generateInsight(env, period, { force: !!body.force }));
       }
+    }
+
+    if (path === '/api/journal/templates') {
+      if (method === 'GET') return json({ templates: await listTemplates(env) });
+      if (method === 'POST') {
+        const body = await request.json() as any;
+        if (!Array.isArray(body?.templates)) return json({ error: 'templates array is required' }, 400);
+        return json({ templates: await saveTemplates(env, body.templates.slice(0, 30)) });
+      }
+    }
+
+    if (path === '/api/journal/enrich') {
+      if (method === 'GET') return json(await enrichEstimate(env));
+      if (method === 'POST') return json(await enrichEntries(env));
     }
 
     if (method === 'POST' && path === '/api/journal/ask') {

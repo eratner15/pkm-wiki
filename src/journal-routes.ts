@@ -6,7 +6,7 @@ import {
 import { journalPageHTML, peoplePageHTML } from './journal-page';
 import { deletePerson, getPerson, listPeople, rebuildMentions, suggestPeople, upsertPerson } from './journal-people';
 import { bookHTML, bookYears } from './journal-book';
-import { importLibrary } from './journal-library';
+import { importJournalFromWiki, importLibrary } from './journal-library';
 import { buildReminder, sendNightlyReminder } from './journal-reminder';
 
 const PERIODS: InsightPeriod[] = ['week', 'month', 'quarter', 'all'];
@@ -132,6 +132,14 @@ export async function handleJournalRoute(request: Request, env: Env, url: URL): 
     // Nightly reminder
     if (method === 'GET' && path === '/api/journal/reminder') return json({ text: await buildReminder(env) });
     if (method === 'POST' && path === '/api/journal/reminder') return json(await sendNightlyReminder(env));
+
+    // Backfill from Roam daily notes already stored in the wiki
+    if (method === 'POST' && path === '/api/journal/import-wiki') {
+      const body = await request.json().catch(() => ({})) as any;
+      const r = await importJournalFromWiki(env, { offset: Number(body.offset) || 0, limit: Number(body.limit) || 60 });
+      if (r.next_offset == null) await rebuildMentions(env);
+      return json(r);
+    }
 
     // Library (Roam knowledge pages into the wiki)
     if (method === 'POST' && path === '/api/journal/library') {

@@ -72,3 +72,33 @@ export async function importLibrary(env: Env, pages: LibraryPage[], opts: { dryR
   }
   return { created: created.length, skipped_existing: skippedExisting.length, skipped_empty: skippedEmpty, existing_titles: skippedExisting.slice(0, 50), dry_run: !!opts.dryRun };
 }
+
+/**
+ * Backfill the journal from Roam daily notes already stored in the wiki (an earlier
+ * import put them in `pages` with the tag "daily-note" and the raw Roam text in R2).
+ * Runs in pages of `limit` notes so each request stays under the Worker subrequest cap.
+ */
+export async function importJournalFromWiki(env: Env, opts: { offset?: number; limit?: number } = {}) {
+  const { parseJournalMarkdown } = await import('./journal-parse');
+  const { importEntries } = await import('./journal');
+  const limit = Math.min(opts.limit || 60, 100);
+  const offset = opts.offset || 0;
+  const total = ((await env.DB.prepare(`SELECT COUNT(*) AS n FROM pages WHERE tags LIKE '%daily-note%'`).first()) as any)?.n || 0;
+  const rows = ((await env.DB.prepare(
+    `SELECT slug, title FROM pages WHERE tags LIKE '%daily-note%' ORDER BY slug LIMIT ? OFFSET ?`
+  ).bind(limit, offset).all()).results || []) as any[];
+
+  const files: { name: string; text: string }[] = [];
+  for (const r of rows) {
+    const obj = await env.STORAGE.get(`wiki/${r.slug}.md`);
+    if (!obj) continue;
+    // Strip what older imports appended after the Roam text.
+    const text = (await obj.text()).split('\n---\n*Imported from Roam*')[0];
+    files.push({ name: `${r.title}.md`, text });
+  }
+  const parsed = parseJournalMarkdown(files);
+  const entries = parsed.entries.map(e => ({ ...e, id: e.id, entry_date: e.date }));
+  const result = entries.length ? await importEntries(env, entries) : { imported: 0, skipped: 0 };
+  const next = offset + rows.length;
+  return { ...result, read: rows.length, redactions: parsed.redactions, next_offset: next < total ? next : null, total };
+}

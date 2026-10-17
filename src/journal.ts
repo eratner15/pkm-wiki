@@ -527,10 +527,13 @@ export async function journalStats(env: Env, today = todayLocal()) {
   const d90 = isoDay(new Date(Date.parse(today) - 90 * 86400_000));
   const d30 = isoDay(new Date(Date.parse(today) - 30 * 86400_000));
   const d14 = isoDay(new Date(Date.parse(today) - 14 * 86400_000));
+  const d60 = isoDay(new Date(Date.parse(today) - 60 * 86400_000));
+  const twoYearsAgo = isoDay(new Date(Date.parse(today) - 729 * 86400_000));
   const mmdd = today.slice(5);
 
   const [totals, monthly, roseAll, thornAll, rose90, thorn90, causes, energy, weekday,
-    heat, onThisDay, recent, actions, lessons, people, mood30, dates, usage] = await env.DB.batch([
+    heat, onThisDay, recent, actions, lessons, people, mood30, dates, usage,
+    overallQ, prior30Q, yearQ, priorYearQ, dailyQ, tagDrivers, energyDrivers, weekdayDrivers, watchQ, todayQ] = await env.DB.batch([
     q(`SELECT COUNT(*) AS entries, MIN(entry_date) AS first, MAX(entry_date) AS last,
        SUM(CASE WHEN body IS NOT NULL AND body <> '' THEN 1 ELSE 0 END) AS with_body,
        SUM(CASE WHEN mood IS NOT NULL THEN 1 ELSE 0 END) AS with_mood,
@@ -563,6 +566,21 @@ export async function journalStats(env: Env, today = todayLocal()) {
        FROM journal_entries WHERE entry_date >= ?`, d30),
     q(`SELECT DISTINCT entry_date AS d FROM journal_entries WHERE entry_date <= ? ORDER BY d DESC LIMIT 400`, today),
     q(`SELECT details FROM activity_log WHERE action = 'journal_ai' AND created_at >= datetime('now', 'start of month')`),
+    // Insight inputs. "v" is the day's value: your Day Score when present, else inferred mood.
+    q(`SELECT ROUND(AVG(COALESCE(day_score, mood)), 2) AS v, COUNT(*) AS n FROM journal_entries WHERE COALESCE(day_score, mood) IS NOT NULL`),
+    q(`SELECT ROUND(AVG(COALESCE(day_score, mood)), 2) AS v, COUNT(*) AS n FROM journal_entries WHERE entry_date >= ? AND entry_date < ?`, d60, d30),
+    q(`SELECT ROUND(AVG(COALESCE(day_score, mood)), 2) AS v, COUNT(*) AS n FROM journal_entries WHERE entry_date >= ?`, yearAgo),
+    q(`SELECT ROUND(AVG(COALESCE(day_score, mood)), 2) AS v, COUNT(*) AS n FROM journal_entries WHERE entry_date >= ? AND entry_date < ?`, twoYearsAgo, yearAgo),
+    q(`SELECT entry_date AS d, ROUND(AVG(COALESCE(day_score, mood)), 2) AS v FROM journal_entries WHERE entry_date >= ? GROUP BY entry_date ORDER BY entry_date`, d90),
+    q(`SELECT value AS label, COUNT(*) AS n, ROUND(AVG(COALESCE(day_score, mood)), 2) AS v FROM journal_entries, json_each(journal_entries.tags)
+       WHERE COALESCE(day_score, mood) IS NOT NULL GROUP BY value HAVING COUNT(*) >= 5`),
+    q(`SELECT energy AS label, COUNT(*) AS n, ROUND(AVG(COALESCE(day_score, mood)), 2) AS v FROM journal_entries
+       WHERE energy IS NOT NULL AND COALESCE(day_score, mood) IS NOT NULL GROUP BY energy HAVING COUNT(*) >= 5`),
+    q(`SELECT CAST(strftime('%w', entry_date) AS INTEGER) AS label, COUNT(*) AS n, ROUND(AVG(COALESCE(day_score, mood)), 2) AS v FROM journal_entries
+       WHERE COALESCE(day_score, mood) IS NOT NULL GROUP BY 1 HAVING COUNT(*) >= 5`),
+    q(`SELECT lower(trim(thorn_cause)) AS cause, COUNT(*) AS n, MAX(entry_date) AS last FROM journal_entries
+       WHERE thorn_cause IS NOT NULL AND entry_date >= ? GROUP BY 1 HAVING COUNT(*) >= 2 ORDER BY n DESC LIMIT 3`, d60),
+    q(`SELECT id, summary, rose, thorn, mood, day_score FROM journal_entries WHERE entry_date = ? ORDER BY updated_at DESC LIMIT 1`, today),
   ]);
 
   const rows = (r: D1Result) => (r.results || []) as any[];
@@ -585,6 +603,17 @@ export async function journalStats(env: Env, today = todayLocal()) {
   for (const r of rows(usage)) {
     try { aiCost += JSON.parse(r.details).cost_usd || 0; } catch {}
   }
+
+  // People as mood drivers (days that mention them), when the people index exists.
+  let personDrivers: any[] = [];
+  try {
+    const pd = await env.DB.prepare(
+      `SELECT p.name AS label, p.id AS person_id, COUNT(*) AS n, ROUND(AVG(COALESCE(e.day_score, e.mood)), 2) AS v
+       FROM journal_mentions m JOIN journal_persons p ON p.id = m.person_id JOIN journal_entries e ON e.id = m.entry_id
+       WHERE COALESCE(e.day_score, e.mood) IS NOT NULL GROUP BY p.id HAVING COUNT(*) >= 5`
+    ).all();
+    personDrivers = ((pd.results || []) as any[]).map(r => ({ kind: 'Person', ...r }));
+  } catch { /* people index not created yet */ }
 
   // People from the people index (journal-people.ts) when it exists; else the Notion relation names.
   let peopleRows = rows(people);
@@ -613,6 +642,21 @@ export async function journalStats(env: Env, today = todayLocal()) {
     lessons: rows(lessons),
     people: peopleRows,
     ai_cost_month_usd: Math.round(aiCost * 1000) / 1000,
+    insight_inputs: {
+      overall: rows(overallQ)[0] || {},
+      prior30: rows(prior30Q)[0] || {},
+      year: rows(yearQ)[0] || {},
+      prior_year: rows(priorYearQ)[0] || {},
+      daily90: rows(dailyQ),
+      watch: rows(watchQ),
+      today: rows(todayQ)[0] || null,
+      drivers: [
+        ...rows(tagDrivers).map(r => ({ kind: 'Theme', ...r })),
+        ...rows(energyDrivers).map(r => ({ kind: 'Energy', ...r, label: r.label + ' energy' })),
+        ...rows(weekdayDrivers).map(r => ({ kind: 'Day', ...r, label: ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'][r.label] })),
+        ...personDrivers,
+      ],
+    },
     model: env.JOURNAL_MODEL || DEFAULT_MODEL,
     notion_connected: !!env.NOTION_TOKEN,
     last_sync: await getState(env, 'notion_last_sync'),

@@ -64,4 +64,19 @@ assert.ok(e.body.includes('the token of my thanks'));
 assert.ok(e.body.includes('https://example.com/a/0123456789abcdef0123456789abcdef0123'));
 assert.ok(e.body.includes('3fb4e1f3c4a681e995f4c01fbd4963f3'));
 assert.equal(r.redactions, 3);
+// No false positives on ordinary words or plain links; tokens inside links are still removed.
+r = P([{ name: 'June 30th, 2021.md', text: [
+  '- Pom Pom mushrooms are the secret ingredient',
+  '- my password is long gone',
+  '- https://www.youtube.com/playlist?list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG',
+  '- https://firebasestorage.googleapis.com/v0/b/x/o/a.png?alt=media&token=1a2b3c4d-5e6f-7a8b-9c0d-1e2f3a4b5c6d',
+  '- Authorization: Bearer AbCdEf1234567890GhIjKl',
+].join('\n') }]);
+e = r.entries[0];
+assert.ok(e.body.includes('the secret ingredient'), e.body);
+assert.ok(e.body.includes('password is long gone'));
+assert.ok(e.body.includes('list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'));
+assert.ok(e.body.includes('token=[redacted]') && !e.body.includes('1a2b3c4d-5e6f'));
+assert.ok(e.body.includes('Bearer [redacted]'));
+assert.equal(r.redactions, 2);
 console.log('redaction tests passed');

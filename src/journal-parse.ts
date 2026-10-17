@@ -184,13 +184,15 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
   // Remove secrets: labelled values ("api key: …", "token=…", "password …") and well-known key formats.
   let redactions = 0;
   const redact = (text: string) => text
-    .replace(/\b(api[ _-]?key|api[ _-]?token|access[ _-]?token|auth[ _-]?token|secret|token|password|passwd|pwd|bearer)(\s*(?:[:=]|is)?\s*["'`]?)([^\s"'`]{8,})/gi,
-      (m, label, sep, val) => (/^(of|the|for|and|to|is|was|from|with|redacted)$/i.test(val) ? m : (redactions++, label + sep + '[redacted]')))
+    // Labelled values need a separator ("token=…", "API key: …"); "Bearer …" needs none.
+    .replace(/\b(api[ _-]?key|api[ _-]?token|access[ _-]?token|auth[ _-]?token|secret|token|password|passwd|pwd)(\s*[:=]\s*["'`]?)([^\s"'`&]{8,})/gi,
+      (m, label, sep, val) => (/^redacted$/i.test(val) ? m : (redactions++, label + sep + '[redacted]')))
+    .replace(/\b(bearer\s+)([A-Za-z0-9._~+\/=-]{16,})/gi, (m, pre) => (redactions++, pre + '[redacted]'))
     .replace(/\b(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,})/g,
       () => (redactions++, '[redacted]'))
-    // Long random-looking strings outside links (mixed letters and digits, 32+ chars).
-    .replace(/(^|[\s(:="'])([A-Za-z0-9_-]{32,})(?=$|[\s),."'])/gm, (m, pre, tok) =>
-      /[A-Za-z]/.test(tok) && /\d/.test(tok) && !/^[0-9a-f]{32}$/i.test(tok) ? (redactions++, pre + '[redacted]') : m);
+    // Long random-looking strings (mixed letters and digits, 32+ chars) that are not part of a link.
+    .replace(/(\S*?)(^|[\s(:="'])([A-Za-z0-9_-]{32,})(?=$|[\s),."'])/gm, (m, lead, pre, tok) =>
+      !/:\/\//.test(lead) && /[A-Za-z]/.test(tok) && /\d/.test(tok) && !/^[0-9a-f]{32}$/i.test(tok) ? (redactions++, lead + pre + '[redacted]') : m);
   files = files.map(f => ({ name: f.name, text: redact(f.text) }));
 
   const entries: ParsedEntry[] = [];

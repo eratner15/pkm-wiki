@@ -55,3 +55,87 @@ CREATE TRIGGER IF NOT EXISTS pages_au AFTER UPDATE ON pages BEGIN
   INSERT INTO pages_fts(pages_fts, rowid, title, summary, tags) VALUES ('delete', old.rowid, old.title, old.summary, old.tags);
   INSERT INTO pages_fts(rowid, title, summary, tags) VALUES (new.rowid, new.title, new.summary, new.tags);
 END;
+
+-- Living Journal (also created at runtime by ensureJournalSchema in src/journal.ts)
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id TEXT PRIMARY KEY,
+  entry_date TEXT NOT NULL,
+  title TEXT,
+  entry_type TEXT,
+  source TEXT,
+  summary TEXT,
+  rose TEXT,
+  rose_theme TEXT,
+  thorn TEXT,
+  thorn_theme TEXT,
+  thorn_cause TEXT,
+  bud TEXT,
+  key_wins TEXT,
+  lesson TEXT,
+  next_action TEXT,
+  notable TEXT,
+  tickers TEXT,
+  day_score REAL,
+  mood REAL,
+  mood_confidence TEXT,
+  energy TEXT,
+  tags TEXT,
+  people TEXT,
+  places TEXT,
+  body TEXT,
+  notion_id TEXT,
+  notion_edited_at TEXT,
+  body_synced_at TEXT,
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_date ON journal_entries(entry_date);
+
+CREATE TABLE IF NOT EXISTS journal_names (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  category TEXT
+);
+
+CREATE TABLE IF NOT EXISTS journal_insights (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  period TEXT NOT NULL,
+  period_key TEXT NOT NULL,
+  content TEXT NOT NULL,
+  model TEXT,
+  input_tokens INTEGER,
+  output_tokens INTEGER,
+  cost_usd REAL,
+  entries_through TEXT,
+  created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_journal_insights_period ON journal_insights(period, period_key);
+
+CREATE TABLE IF NOT EXISTS journal_state (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS journal_fts USING fts5(
+  title, summary, rose, thorn, bud, lesson, body, content='journal_entries', content_rowid='rowid'
+);
+
+CREATE TRIGGER IF NOT EXISTS journal_ai AFTER INSERT ON journal_entries BEGIN
+  INSERT INTO journal_fts(rowid, title, summary, rose, thorn, bud, lesson, body)
+  VALUES (new.rowid, new.title, new.summary, new.rose, new.thorn, new.bud, new.lesson, new.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS journal_ad AFTER DELETE ON journal_entries BEGIN
+  INSERT INTO journal_fts(journal_fts, rowid, title, summary, rose, thorn, bud, lesson, body)
+  VALUES ('delete', old.rowid, old.title, old.summary, old.rose, old.thorn, old.bud, old.lesson, old.body);
+END;
+
+CREATE TRIGGER IF NOT EXISTS journal_au AFTER UPDATE ON journal_entries BEGIN
+  INSERT INTO journal_fts(journal_fts, rowid, title, summary, rose, thorn, bud, lesson, body)
+  VALUES ('delete', old.rowid, old.title, old.summary, old.rose, old.thorn, old.bud, old.lesson, old.body);
+  INSERT INTO journal_fts(rowid, title, summary, rose, thorn, bud, lesson, body)
+  VALUES (new.rowid, new.title, new.summary, new.rose, new.thorn, new.bud, new.lesson, new.body);
+END;

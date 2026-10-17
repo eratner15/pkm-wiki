@@ -4,7 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "esbuild src/journal-parse.ts --format=esm --outfile=.test-build/journal-parse.mjs --log-level=warning && node test/journal-parse.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260401.0",
@@ -12,6 +13,8 @@
     "wrangler": "^3.99.0"
   },
   "dependencies": {
-    "@cloudflare/puppeteer": "^1.0.7"
+    "@anthropic-ai/sdk": "^0.135.0",
+    "@cloudflare/puppeteer": "^1.0.7",
+    "zod": "^4.6.7"
   }
 }

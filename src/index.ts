@@ -5,6 +5,8 @@ import { queryWiki } from './query';
 import { lintWiki } from './lint';
 import { searchSimilar, findSimilarPages, rebuildIndex, indexPage } from './vectorize';
 import { getCachedPage, getCachedSearch, setCachedSearch, invalidatePage } from './kv-cache';
+import { handleJournalRoute, runJournalCron } from './journal-routes';
+import { handleTelegramJournal } from './journal-reminder';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -192,9 +194,12 @@ export default {
         const isURL = /^https?:\/\//.test(text);
         const isQuestion = /\?\s*$/.test(text);
         let replyText = '';
+        const journalReply = await handleTelegramJournal(env, message);
 
-        if (text === '/start') {
-          replyText = 'PKM Wiki Bot ready.\n\nSend me:\n- A URL to ingest\n- A thought to capture\n- A question? to query your wiki\n- /briefing for morning briefing\n- /stats for wiki stats';
+        if (journalReply !== null) {
+          replyText = journalReply;
+        } else if (text === '/start') {
+          replyText = 'PKM Wiki Bot ready.\n\nReply to the evening check-in, or send /j <your day>, to journal. /onthisday shows past years.\n\nSend me:\n- A URL to ingest\n- A thought to capture\n- A question? to query your wiki\n- /briefing for morning briefing\n- /stats for wiki stats';
         } else if (text === '/briefing') {
           const stats = await env.DB.prepare('SELECT COUNT(*) as count FROM pages').first();
           const recent = await env.DB.prepare('SELECT title FROM pages ORDER BY updated_at DESC LIMIT 3').all();
@@ -281,7 +286,7 @@ export default {
 
         if (token !== validToken) {
           // Show login page for GET /, redirect API calls
-          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm')) {
+          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal' || path.startsWith('/journal/'))) {
             return new Response(loginPageHTML(), {
               status: 401,
               headers: { 'Content-Type': 'text/html' },
@@ -1591,6 +1596,12 @@ export default {
         }
       }
 
+      // Living Journal — /journal and /api/journal/*
+      if (path === '/journal' || path.startsWith('/journal/') || path.startsWith('/api/journal')) {
+        const journalResponse = await handleJournalRoute(request, env, url);
+        if (journalResponse) return journalResponse;
+      }
+
       // GET / — Dashboard
       if (method === 'GET' && path === '/') {
         return new Response(dashboardHTML(), {
@@ -2249,6 +2260,11 @@ export default {
       console.error('PKM Wiki error:', err);
       return error(err.message || 'Internal server error', 500);
     }
+  },
+
+  // Cron triggers (see [triggers] in wrangler.toml)
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runJournalCron(event.cron, env));
   },
 
   // Queue consumer handler
@@ -3279,6 +3295,7 @@ function dashboardHTML(): string {
         <button class="sort-btn" id="nav-think" onclick="navTab('think')" style="padding:6px 0;font-size:11px">&#129504; Think</button>
         <button class="sort-btn" id="nav-graph" onclick="navTab('graph')" style="padding:6px 0;font-size:11px">&#128279; Graph</button>
         <button class="sort-btn" id="nav-ideas" onclick="navTab('ideas')" style="padding:6px 0;font-size:11px">&#128161; Ideas</button>
+        <a class="sort-btn" href="/journal" style="padding:6px 0;font-size:11px;grid-column:1/-1;text-align:center;text-decoration:none">&#128211; Journal</a>
       </div>
     </div>
     <div class="sidebar-stats" id="sidebar-stats"></div>

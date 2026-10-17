@@ -5,6 +5,7 @@ import { queryWiki } from './query';
 import { lintWiki } from './lint';
 import { searchSimilar, findSimilarPages, rebuildIndex, indexPage } from './vectorize';
 import { getCachedPage, getCachedSearch, setCachedSearch, invalidatePage } from './kv-cache';
+import { handleJournalRoute, runJournalCron } from './journal-routes';
 
 const CORS_HEADERS: Record<string, string> = {
   'Access-Control-Allow-Origin': '*',
@@ -281,7 +282,7 @@ export default {
 
         if (token !== validToken) {
           // Show login page for GET /, redirect API calls
-          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm')) {
+          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal')) {
             return new Response(loginPageHTML(), {
               status: 401,
               headers: { 'Content-Type': 'text/html' },
@@ -1591,6 +1592,12 @@ export default {
         }
       }
 
+      // Living Journal — /journal and /api/journal/*
+      if (path === '/journal' || path === '/journal/' || path.startsWith('/api/journal')) {
+        const journalResponse = await handleJournalRoute(request, env, url);
+        if (journalResponse) return journalResponse;
+      }
+
       // GET / — Dashboard
       if (method === 'GET' && path === '/') {
         return new Response(dashboardHTML(), {
@@ -2249,6 +2256,11 @@ export default {
       console.error('PKM Wiki error:', err);
       return error(err.message || 'Internal server error', 500);
     }
+  },
+
+  // Cron triggers (see [triggers] in wrangler.toml)
+  async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    ctx.waitUntil(runJournalCron(event.cron, env));
   },
 
   // Queue consumer handler
@@ -3279,6 +3291,7 @@ function dashboardHTML(): string {
         <button class="sort-btn" id="nav-think" onclick="navTab('think')" style="padding:6px 0;font-size:11px">&#129504; Think</button>
         <button class="sort-btn" id="nav-graph" onclick="navTab('graph')" style="padding:6px 0;font-size:11px">&#128279; Graph</button>
         <button class="sort-btn" id="nav-ideas" onclick="navTab('ideas')" style="padding:6px 0;font-size:11px">&#128161; Ideas</button>
+        <a class="sort-btn" href="/journal" style="padding:6px 0;font-size:11px;grid-column:1/-1;text-align:center;text-decoration:none">&#128211; Journal</a>
       </div>
     </div>
     <div class="sidebar-stats" id="sidebar-stats"></div>

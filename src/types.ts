@@ -9,6 +9,12 @@ export interface Env {
   JOBS_QUEUE?: Queue;
   CACHE?: KVNamespace;
   BROWSER?: any;
+  NOTION_TOKEN?: string;
+  NOTION_JOURNAL_DB?: string;
+  NOTION_PEOPLE_DB?: string;
+  NOTION_PLACES_DB?: string;
+  JOURNAL_MODEL?: string;
+  NOTION_API_BASE?: string; // tests point this at a mock Notion server
 }
 
 export interface WikiPage {

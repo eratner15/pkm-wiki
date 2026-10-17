@@ -39,5 +39,13 @@ binding = "BROWSER"
 binding = "CACHE"
 id = "9663d2839a3748238f8bfa9f767a3252"
 
+[triggers]
+# Hourly: pull changed journal pages from Notion. Monday 12:10 UTC: weekly journal insight.
+crons = ["7 * * * *", "10 12 * * 1"]
+
 [vars]
 WIKI_OWNER = "evan"
+NOTION_JOURNAL_DB = "a561133e20ed4efea5aaed646c3372f3"
+NOTION_PEOPLE_DB = "c4ed250a5a4a4fd981960badfe032b32"
+NOTION_PLACES_DB = "756f34045c1e439abaa74b29146cacaa"
+JOURNAL_MODEL = "claude-opus-5-5"

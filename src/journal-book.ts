@@ -8,12 +8,12 @@ import { ensureJournalSchema } from './journal';
 
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function esc(s: unknown): string {
+export function esc(s: unknown): string {
   return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!));
 }
 
 /** Roam/markdown inline syntax to safe HTML. */
-function inline(s: string): string {
+export function inline(s: string): string {
   let t = s
     .replace(/\{\{\[\[TODO\]\]\}\}/g, '☐').replace(/\{\{\[\[DONE\]\]\}\}/g, '☑')
     .replace(/\{\{[^}]*\}\}/g, '')

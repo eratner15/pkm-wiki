@@ -104,6 +104,19 @@ Links refresh after every import and every new entry. Names are stored in D1, no
 
 Each volume has a cover, a year-at-a-glance page (days, average mood, best and hardest days, people of the year, lessons, contents) and one chapter per month. Click **Print or save as PDF**. Pages are 6 × 9 inches. Roam label blocks that are already shown as Rose, Thorn, Wins, Lesson and Next are not repeated in the notes.
 
+## Keepsake book
+
+`/journal/keepsake` is one printable volume for all years, laid out for a Gelato hardcover photo book, 8 x 11 in portrait (210 x 280 mm, 170 gsm silk paper, matte cover). Gelato prints 30 to 200 inner pages.
+
+1. Open `/journal/keepsake`. The page shows the estimated cost before anything runs.
+2. Press **Write the book with Claude**. Two passes read every day once (the second pass reads the notes from the prompt cache):
+   - **years**: a chapter per year (thin years are grouped), a line per month, the days to print in full, and quotes.
+   - **connections**: threads across years, people, echoes between years, a letter, closing questions and title ideas.
+3. Review the book on screen. Edit the title, subtitle and dedication. Remove any day with **Remove from book**.
+4. Press **Print or save as PDF**. Turn on background graphics and keep the margins at Default.
+
+Every quote is checked against the notes word for word (case, spacing, markup and curly quotes are ignored; "..." joins pieces that must appear in order). A quote that does not match is dropped, and the toolbar shows how many were dropped. The result is stored in `journal_state` under the key `keepsake`.
+
 ## Nightly reminder
 
 Every evening at 01:07 UTC (9:07 pm New York in summer, 8:07 pm in winter), the existing Telegram bot sends:

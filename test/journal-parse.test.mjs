@@ -79,4 +79,10 @@ assert.ok(e.body.includes('list=PLx0sYbCqOb8TBPRdmBHs5Iftvv9TPboYG'));
 assert.ok(e.body.includes('token=[redacted]') && !e.body.includes('1a2b3c4d-5e6f'));
 assert.ok(e.body.includes('Bearer [redacted]'));
 assert.equal(r.redactions, 2);
+// Seed phrases: 12 random lowercase words are removed; an ordinary 12-word sentence is kept.
+r = P([{ name: 'March 2nd, 2021.md', text: '- Wallet\n    - lunar crisp velvet orbit maple quiet harbor tiger frozen bundle copper noble\n- went for a walk with the kids then had lunch and read for an hour' }]);
+e = r.entries[0];
+assert.ok(e.body.includes('[recovery phrase removed]') && !e.body.includes('velvet orbit'));
+assert.ok(e.body.includes('went for a walk with the kids'));
+assert.equal(r.redactions, 1);
 console.log('redaction tests passed');

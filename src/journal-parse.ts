@@ -183,6 +183,8 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
 
   // Remove secrets: labelled values ("api key: …", "token=…", "password …") and well-known key formats.
   let redactions = 0;
+  // Kept inside the function: the dashboard runs this parser in the browser from its source text.
+  const SEED_STOPWORDS = new Set('the and for with was that this from have had not but you your are were our they them then than what when will just into about after there their been some more also very'.split(' '));
   const redact = (text: string) => text
     // Labelled values need a separator ("token=…", "API key: …"); "Bearer …" needs none.
     .replace(/\b(api[ _-]?key|api[ _-]?token|access[ _-]?token|auth[ _-]?token|secret|token|password|passwd|pwd)(\s*[:=]\s*["'`]?)([^\s"'`&]{8,})/gi,
@@ -190,6 +192,11 @@ export function parseJournalMarkdown(files: { name: string; text: string }[]): P
     .replace(/\b(bearer\s+)([A-Za-z0-9._~+\/=-]{16,})/gi, (m, pre) => (redactions++, pre + '[redacted]'))
     .replace(/\b(sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|xox[abpr]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{15,}\.[A-Za-z0-9_-]{10,})/g,
       () => (redactions++, '[redacted]'))
+    // Wallet recovery (seed) phrases: a line of exactly 12, 15, 18, 21 or 24 short lowercase words with no common English words.
+    .replace(/^(\s*(?:[-*+]\s+)?)((?:[a-z]{3,8} ){11,23}[a-z]{3,8})\s*$/gm, (m, lead, words) => {
+      const w = words.split(' ');
+      return [12, 15, 18, 21, 24].includes(w.length) && !w.some((x: string) => SEED_STOPWORDS.has(x)) ? (redactions++, lead + '[recovery phrase removed]') : m;
+    })
     // Long random-looking strings (mixed letters and digits, 32+ chars) that are not part of a link.
     .replace(/(\S*?)(^|[\s(:="'])([A-Za-z0-9_-]{32,})(?=$|[\s),."'])/gm, (m, lead, pre, tok) =>
       !/:\/\//.test(lead) && /[A-Za-z]/.test(tok) && /\d/.test(tok) && !/^[0-9a-f]{32}$/i.test(tok) ? (redactions++, lead + pre + '[redacted]') : m);

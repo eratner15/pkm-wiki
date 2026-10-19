@@ -6,6 +6,7 @@
 import { Env } from './types';
 import { captureEntry, ensureJournalSchema, todayLocal } from './journal';
 import { rebuildMentions } from './journal-people';
+import { highlightOfTheDay } from './journal-reading';
 
 const MARK = 'Evening check-in';
 
@@ -47,6 +48,8 @@ export async function buildReminder(env: Env, today = todayLocal()): Promise<str
     lines.push('', 'Open next actions:');
     for (const a of open) lines.push(`• ${short(a.next_action, 120)} (${a.entry_date.slice(5)})`);
   }
+  const hl = await highlightOfTheDay(env, today).catch(() => null);
+  if (hl) lines.push('', 'From your library:', `“${short(hl.text, 280)}”`, `— ${hl.title}${hl.author ? `, ${hl.author}` : ''}`);
   lines.push('', 'Journal: https://pkm.cafecito-ai.com/journal');
   return lines.join('\n');
 }

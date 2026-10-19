@@ -22,6 +22,16 @@ const MODELS = {
 
 type TaskType = keyof typeof MODELS;
 
+// The wiki rulebook (see rulebook.ts), set once per request. Code and build-plan tasks skip it.
+let RULEBOOK = '';
+const RULEBOOK_TASKS: TaskType[] = ['ingest', 'ideas', 'research', 'query', 'quick'];
+export function setRulebook(text: string) { RULEBOOK = text || ''; }
+export function withRulebook(task: TaskType, system: string): string {
+  return RULEBOOK && RULEBOOK_TASKS.includes(task)
+    ? `Follow the wiki rulebook below. Where it conflicts with the task instructions on how to write or answer, the rulebook wins; the task's output format still applies.\n\n<rulebook>\n${RULEBOOK}\n</rulebook>\n\n${system}`
+    : system;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -43,6 +53,7 @@ export async function runAI(
   maxTokens = 4000
 ): Promise<string> {
   const model = MODELS[task];
+  system = withRulebook(task, system);
   const MAX_RETRIES = 4;
   const BACKOFF = [5000, 15000, 30000, 45000];
 

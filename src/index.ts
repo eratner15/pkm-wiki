@@ -1,4 +1,6 @@
 import { Env } from './types';
+import { primeRulebook, getRulebook, saveRulebook, rulebookPageHTML } from './rulebook';
+import { saveAnswer, listAnswers, answersPageHTML } from './answers';
 import { ingestSource, ingestBatch } from './ingest';
 import { buildFromSpark, getBuildFiles } from './builder';
 import { queryWiki } from './query';
@@ -67,6 +69,9 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     const method = request.method;
+
+    // Every AI prompt in this request reads the wiki rulebook first (cached for five minutes).
+    await primeRulebook(env).catch(() => {});
 
     // CORS preflight
     if (method === 'OPTIONS') {
@@ -286,7 +291,7 @@ export default {
 
         if (token !== validToken) {
           // Show login page for GET /, redirect API calls
-          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal' || path.startsWith('/journal/'))) {
+          if (method === 'GET' && (path === '/' || path === '/pkm/' || path === '/pkm' || path === '/journal' || path.startsWith('/journal/') || path === '/answers' || path === '/rulebook')) {
             return new Response(loginPageHTML(), {
               status: 401,
               headers: { 'Content-Type': 'text/html' },
@@ -819,6 +824,25 @@ export default {
         return new Response(topicPageHTML(slug), {
           headers: { 'Content-Type': 'text/html; charset=utf-8' },
         });
+      }
+
+      // Saved answers and the wiki rulebook
+      if (method === 'POST' && path === '/api/answers') {
+        const body = await request.json().catch(() => ({})) as any;
+        try { return json(await saveAnswer(env, body)); } catch (e: any) { return error(e.message || 'Could not save', 400); }
+      }
+      if (method === 'GET' && path === '/api/answers') return json({ answers: await listAnswers(env) });
+      if (method === 'GET' && path === '/answers') {
+        return new Response(answersPageHTML(await listAnswers(env)), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
+      }
+      if (method === 'GET' && path === '/api/rulebook') return json(await getRulebook(env));
+      if (method === 'POST' && path === '/api/rulebook') {
+        const body = await request.json().catch(() => ({})) as any;
+        try { await saveRulebook(env, body.text); return json({ ok: true }); } catch (e: any) { return error(e.message || 'Could not save', 400); }
+      }
+      if (method === 'GET' && path === '/rulebook') {
+        const r = await getRulebook(env);
+        return new Response(rulebookPageHTML(r.text, r.saved), { headers: { 'Content-Type': 'text/html; charset=utf-8' } });
       }
 
       // POST /api/query
@@ -2264,11 +2288,13 @@ export default {
 
   // Cron triggers (see [triggers] in wrangler.toml)
   async scheduled(event: ScheduledController, env: Env, ctx: ExecutionContext) {
+    await primeRulebook(env).catch(() => {});
     ctx.waitUntil(runJournalCron(event.cron, env));
   },
 
   // Queue consumer handler
   async queue(batch: MessageBatch, env: Env) {
+    await primeRulebook(env).catch(() => {});
     for (const msg of batch.messages) {
       const { action, payload } = msg.body as any;
       try {
@@ -3296,6 +3322,8 @@ function dashboardHTML(): string {
         <button class="sort-btn" id="nav-graph" onclick="navTab('graph')" style="padding:6px 0;font-size:11px">&#128279; Graph</button>
         <button class="sort-btn" id="nav-ideas" onclick="navTab('ideas')" style="padding:6px 0;font-size:11px">&#128161; Ideas</button>
         <a class="sort-btn" href="/journal" style="padding:6px 0;font-size:11px;grid-column:1/-1;text-align:center;text-decoration:none">&#128211; Journal</a>
+        <a class="sort-btn" href="/answers" style="padding:6px 0;font-size:11px;text-align:center;text-decoration:none">&#128190; Answers</a>
+        <a class="sort-btn" href="/rulebook" style="padding:6px 0;font-size:11px;text-align:center;text-decoration:none">&#128220; Rulebook</a>
       </div>
     </div>
     <div class="sidebar-stats" id="sidebar-stats"></div>
@@ -3755,7 +3783,7 @@ function dashboardHTML(): string {
         window._lastQAAnswer = data.answer || '';
         window._lastQAQuestion = q;
         box.innerHTML = renderMarkdown(data.answer || data.error || 'No answer.') +
-          (data.answer ? '<div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border)"><button class="btn-secondary" onclick="fileToWiki(window._lastQAAnswer, &apos;Q&A: &apos; + window._lastQAQuestion)" style="font-size:11px">&#128190; File to Wiki</button></div>' : '');
+          (data.answer ? saveAnswerBar(q, data, true) : '');
       }).catch(function(e) {
         box.innerHTML = '<span style="color:var(--red)">Error: ' + e.message + '</span>';
       });
@@ -4231,7 +4259,7 @@ function dashboardHTML(): string {
         });
         var data = await res.json();
         var answer = data.answer || data.error || 'No answer.';
-        box.innerHTML = renderMarkdown(answer);
+        box.innerHTML = renderMarkdown(answer) + (data.answer ? saveAnswerBar(q, data) : '');
       } catch (e) {
         box.innerHTML = '<span style="color:var(--red)">Error: ' + e.message + '</span>';
       }
@@ -5914,6 +5942,30 @@ function dashboardHTML(): string {
     window.runLint = runLint;
 
     // File Q&A answer back to wiki
+    // Saved answers: keep a good answer as a wiki page, word for word.
+    function saveAnswerBar(q, data, withExtract) {
+      window._lastQA = { question: q, answer: data.answer || '', citations: data.citations || [] };
+      window._lastQAAnswer = data.answer || '';
+      window._lastQAQuestion = q;
+      return '<div class="qa-save" style="margin-top:12px;padding-top:10px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">' +
+        '<button class="btn-secondary" onclick="saveLastAnswer(this)" style="font-size:11px">&#128190; Save answer</button>' +
+        (withExtract ? '<button class="btn-secondary" onclick="fileToWiki(window._lastQAAnswer, &apos;Q&A: &apos; + window._lastQAQuestion)" style="font-size:11px">Extract facts to wiki</button>' : '') +
+        '<span class="qa-save-status" style="font-size:11px;color:var(--text-muted)"></span></div>';
+    }
+    async function saveLastAnswer(btn) {
+      var qa = window._lastQA; if (!qa || !qa.answer) return;
+      var status = btn.parentNode.querySelector('.qa-save-status');
+      btn.disabled = true; status.textContent = 'Saving...';
+      try {
+        var res = await fetch(api('/api/answers'), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(qa) });
+        var data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.status);
+        status.innerHTML = 'Saved as a wiki page. <a href="#/page/' + data.slug + '" onclick="navigateTo(&apos;' + data.slug + '&apos;);return false">Open it</a> &middot; <a href="/answers">All saved answers</a>';
+        loadAllPages(); statsCache = null;
+      } catch (e) { status.textContent = 'Not saved: ' + e.message; btn.disabled = false; }
+    }
+    window.saveLastAnswer = saveLastAnswer;
+
     async function fileToWiki(content, title) {
       if (!content) return;
       try {
@@ -6130,6 +6182,9 @@ function dashboardHTML(): string {
       try {
         await Promise.all([loadSidebarStats().catch(function(){}), loadAllPages().catch(function(){})]);
       } catch(e) { console.error('Init data load failed:', e); }
+      // Deep link: /#/page/<slug> opens that page (used by Saved Answers).
+      var hashSlug = location.hash.indexOf('#/page/') === 0 ? decodeURIComponent(location.hash.slice(7)) : '';
+      if (hashSlug) { try { navigateTo(hashSlug); return; } catch (e) { console.error('Deep link failed:', e); } }
       try {
         loadDashboard();
       } catch(e) { console.error('Dashboard render failed:', e); document.getElementById('main-inner').innerHTML = '<div style="padding:40px;color:#CC4455">Dashboard failed to load: ' + e.message + '</div>'; }

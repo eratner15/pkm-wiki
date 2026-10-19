@@ -14,6 +14,7 @@ export interface Env {
   NOTION_PEOPLE_DB?: string;
   NOTION_PLACES_DB?: string;
   JOURNAL_MODEL?: string;
+  READWISE_TOKEN?: string;
   NOTION_API_BASE?: string; // tests point this at a mock Notion server
 }
 

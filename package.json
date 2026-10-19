@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "test": "esbuild src/journal-parse.ts --format=esm --outfile=.test-build/journal-parse.mjs --log-level=warning && esbuild src/journal-keepsake.ts src/journal-keepsake-book.ts src/journal-reading.ts src/answers.ts src/ai.ts src/rulebook.ts --bundle --platform=node --format=esm --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node test/journal-parse.test.mjs && node test/journal-keepsake.test.mjs && node test/journal-reading.test.mjs && node test/wiki-rules.test.mjs",
+    "test": "esbuild src/journal-parse.ts --format=esm --outfile=.test-build/journal-parse.mjs --log-level=warning && esbuild src/journal-keepsake.ts src/journal-keepsake-book.ts src/journal-reading.ts src/answers.ts src/ai.ts src/rulebook.ts --bundle --platform=node --format=esm --outdir=.test-build --out-extension:.js=.mjs --log-level=warning && node test/journal-parse.test.mjs && node test/journal-keepsake.test.mjs && node test/journal-reading.test.mjs && node test/wiki-rules.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260401.0",
